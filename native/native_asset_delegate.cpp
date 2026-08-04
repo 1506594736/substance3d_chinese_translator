@@ -48,6 +48,27 @@ QString g_fallbackPath;
 QPointer<QWidget> g_originalTooltipOwner;
 bool g_enabled = true;
 constexpr auto kSourceProperty = "_sp_translation_source";
+constexpr auto kComboSourcesProperty = "_sp_translation_combo_sources";
+constexpr auto kTabSourcesProperty = "_sp_translation_tab_sources";
+
+QComboBox *owningComboBox(QAbstractItemView *view) {
+    if (!view)
+        return nullptr;
+    for (QObject *current = view; current; current = current->parent()) {
+        if (auto *combo = qobject_cast<QComboBox *>(current))
+            return combo;
+    }
+    // Qt places a combo popup inside a private top-level container on some
+    // styles, so its QObject parent chain does not necessarily reach the
+    // QComboBox. Comparing view pointers is stable across those styles.
+    for (QWidget *widget : QApplication::allWidgets()) {
+        if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+            if (combo->view() == view)
+                return combo;
+        }
+    }
+    return nullptr;
+}
 
 QString translated(const QString &text, bool removeMnemonic = false) {
     if (!g_enabled)
@@ -335,19 +356,31 @@ void translateWidget(QWidget *widget) {
         return;
     }
     if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+        QStringList sources = combo->property(kComboSourcesProperty).toStringList();
+        sources.resize(combo->count());
         for (int i = 0; i < combo->count(); ++i) {
-            const QString result = translated(combo->itemText(i));
-            if (!result.isNull() && combo->itemText(i) != result)
+            const QString source = combo->itemText(i).trimmed();
+            const QString result = translated(source);
+            if (!result.isNull() && combo->itemText(i) != result) {
+                sources[i] = source;
                 combo->setItemText(i, result);
+            }
         }
+        combo->setProperty(kComboSourcesProperty, sources);
         return;
     }
     if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
+        QStringList sources = tabs->property(kTabSourcesProperty).toStringList();
+        sources.resize(tabs->count());
         for (int i = 0; i < tabs->count(); ++i) {
-            const QString result = translated(tabs->tabText(i));
-            if (!result.isNull() && tabs->tabText(i) != result)
+            const QString source = tabs->tabText(i).trimmed();
+            const QString result = translated(source);
+            if (!result.isNull() && tabs->tabText(i) != result) {
+                sources[i] = source;
                 tabs->setTabText(i, result);
+            }
         }
+        tabs->setProperty(kTabSourcesProperty, sources);
         return;
     }
     if (auto *dock = qobject_cast<QDockWidget *>(widget)) {
@@ -384,6 +417,30 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
         QString displayed = action->text().trimmed();
         displayed.remove(u'&');
         return g_translations.value(source) == displayed ? source : QString();
+    }
+
+    // The open part of a QComboBox is an independent item-view viewport.
+    // Resolve the hovered row through its owning combo instead of treating it
+    // as an asset view (whose thumbnail tooltip must remain untouched).
+    if (auto *view = qobject_cast<QAbstractItemView *>(widget->parentWidget())) {
+        if (widget == view->viewport()) {
+            if (QComboBox *combo = owningComboBox(view)) {
+                const QModelIndex index = view->indexAt(position);
+                if (!index.isValid())
+                    return {};
+                const int row = index.row();
+                const QString displayed = index.data(Qt::DisplayRole).toString().trimmed();
+                const QStringList sources =
+                    combo->property(kComboSourcesProperty).toStringList();
+                if (row >= 0 && row < sources.size()) {
+                    const QString source = sources.at(row);
+                    if (!source.isEmpty() && g_translations.value(source) == displayed)
+                        return source;
+                }
+                const auto original = g_originals.constFind(displayed);
+                return original == g_originals.cend() ? QString() : original.value();
+            }
+        }
     }
 
     // Preserve existing tooltips on non-label controls. Parameter labels are
@@ -452,13 +509,32 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
         displayed = label->text();
     else if (auto *group = qobject_cast<QGroupBox *>(widget))
         displayed = group->title();
-    else if (auto *combo = qobject_cast<QComboBox *>(widget))
+    else if (auto *combo = qobject_cast<QComboBox *>(widget)) {
         displayed = combo->currentText();
+        const QStringList sources =
+            combo->property(kComboSourcesProperty).toStringList();
+        const int index = combo->currentIndex();
+        if (index >= 0 && index < sources.size()) {
+            const QString source = sources.at(index);
+            if (!source.isEmpty() && g_translations.value(source) == displayed)
+                return source;
+        }
+    }
     else if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
         const int tab = tabs->tabAt(position);
-        if (tab >= 0)
+        if (tab >= 0) {
             displayed = tabs->tabText(tab);
+            const QStringList sources =
+                tabs->property(kTabSourcesProperty).toStringList();
+            if (tab < sources.size()) {
+                const QString source = sources.at(tab);
+                if (!source.isEmpty() && g_translations.value(source) == displayed)
+                    return source;
+            }
+        }
     }
+    else if (auto *dock = qobject_cast<QDockWidget *>(widget))
+        displayed = dock->windowTitle();
 
     displayed.remove(u'&');
     displayed = displayed.trimmed();
@@ -505,8 +581,21 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     if (auto *view = qobject_cast<QAbstractItemView *>(widget->parentWidget())) {
         if (widget == view->viewport()) {
             const QModelIndex index = view->indexAt(position);
-            if (index.isValid())
-                return index.data(Qt::DisplayRole).toString().trimmed();
+            if (index.isValid()) {
+                const QString displayed =
+                    index.data(Qt::DisplayRole).toString().trimmed();
+                if (QComboBox *combo = owningComboBox(view)) {
+                    const QStringList sources =
+                        combo->property(kComboSourcesProperty).toStringList();
+                    if (index.row() >= 0 && index.row() < sources.size() &&
+                        !sources.at(index.row()).isEmpty())
+                        return sources.at(index.row());
+                    const auto original = g_originals.constFind(displayed);
+                    return original == g_originals.cend()
+                        ? QString() : original.value();
+                }
+                return displayed;
+            }
             return {};
         }
     }
@@ -534,13 +623,26 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
         displayed = label->text();
     else if (auto *group = qobject_cast<QGroupBox *>(widget))
         displayed = group->title();
-    else if (auto *combo = qobject_cast<QComboBox *>(widget))
+    else if (auto *combo = qobject_cast<QComboBox *>(widget)) {
         displayed = combo->currentText();
+        const QStringList sources =
+            combo->property(kComboSourcesProperty).toStringList();
+        const int index = combo->currentIndex();
+        if (index >= 0 && index < sources.size() && !sources.at(index).isEmpty())
+            return sources.at(index);
+    }
     else if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
         const int tab = tabs->tabAt(position);
-        if (tab >= 0)
+        if (tab >= 0) {
             displayed = tabs->tabText(tab);
+            const QStringList sources =
+                tabs->property(kTabSourcesProperty).toStringList();
+            if (tab < sources.size() && !sources.at(tab).isEmpty())
+                return sources.at(tab);
+        }
     }
+    else if (auto *dock = qobject_cast<QDockWidget *>(widget))
+        displayed = dock->windowTitle();
 
     displayed.remove(u'&');
     displayed = displayed.trimmed();

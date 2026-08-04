@@ -141,12 +141,13 @@ def _load_native_delegate():
         dll.sp_delegate_reserve_translations.argtypes = [ctypes.c_int]
         dll.sp_delegate_add_translation.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
         dll.sp_delegate_set_translation_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        dll.sp_delegate_set_fallback_path.argtypes = [ctypes.c_wchar_p]
         dll.sp_delegate_set_enabled.argtypes = [ctypes.c_int]
         dll.sp_delegate_install.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install.restype = ctypes.c_int
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
-        if dll.sp_delegate_api_version() != 5:
+        if dll.sp_delegate_api_version() != 6:
             return None
         _native_delegate = dll
     except Exception as exc:
@@ -162,6 +163,9 @@ def _sync_native_dictionary():
         return False
     try:
         dll.sp_delegate_clear_translations()
+        dll.sp_delegate_set_fallback_path(
+            os.path.join(TRANSLATIONS_DIR, "user_added_zh.json")
+        )
         dll.sp_delegate_reserve_translations(len(TRANSLATE_DICT))
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
@@ -782,7 +786,7 @@ class LabelExtractorDialog(QtWidgets.QDialog):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
-            "递归扫描所有资源文件：提取资源内部的 XML，"
+            "递归扫描所有资源文件，提取资源内部的词条。"
             "普通文件名和文件夹名可按需提取，"
             "生成可直接编辑的 *_zh.json 翻译包。"
         )

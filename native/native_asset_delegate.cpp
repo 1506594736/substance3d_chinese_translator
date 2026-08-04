@@ -12,6 +12,7 @@
 #include <QtCore/QVariant>
 #include <QtGui/QHelpEvent>
 #include <QtGui/QContextMenuEvent>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QAction>
 #include <QtGui/QPainter>
 #include <QtWidgets/QAbstractButton>
@@ -43,6 +44,8 @@ namespace {
 QHash<QString, QString> g_translations;
 QHash<QString, QString> g_originals;
 QHash<QString, QString> g_translationPaths;
+QString g_fallbackPath;
+QPointer<QWidget> g_originalTooltipOwner;
 bool g_enabled = true;
 constexpr auto kSourceProperty = "_sp_translation_source";
 
@@ -247,9 +250,13 @@ void translateMenu(QMenu *menu) {
     if (!menu || !g_enabled)
         return;
     for (QAction *action : menu->actions()) {
-        const QString result = translated(action->text(), true);
-        if (!result.isNull() && action->text() != result)
+        QString source = action->text().trimmed();
+        source.remove(u'&');
+        const QString result = translated(source, true);
+        if (!result.isNull() && action->text() != result) {
+            action->setProperty(kSourceProperty, source);
             action->setText(result);
+        }
     }
 }
 
@@ -362,6 +369,22 @@ void translateWidget(QWidget *widget) {
 QString originalTextAt(QWidget *widget, const QPoint &position) {
     if (!widget || !g_enabled)
         return {};
+
+    // QMenu paints all entries itself, so there is no child label from which
+    // the generic tooltip path can recover the source. Only actions actually
+    // translated by this plug-in carry this marker; Painter's native entries
+    // and their own help text remain untouched.
+    if (auto *menu = qobject_cast<QMenu *>(widget)) {
+        QAction *action = menu->actionAt(position);
+        if (!action || action->isSeparator())
+            return {};
+        const QString source = action->property(kSourceProperty).toString().trimmed();
+        if (source.isEmpty())
+            return {};
+        QString displayed = action->text().trimmed();
+        displayed.remove(u'&');
+        return g_translations.value(source) == displayed ? source : QString();
+    }
 
     // Preserve existing tooltips on non-label controls. Parameter labels are
     // handled specially: replace Painter's long description with the concise
@@ -489,7 +512,23 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     }
 
     QString displayed;
-    if (auto *button = qobject_cast<QAbstractButton *>(widget))
+    if (auto *menu = qobject_cast<QMenu *>(widget)) {
+        QAction *action = menu->actionAt(position);
+        if (!action || action->isSeparator())
+            return {};
+        displayed = action->text();
+        const QString storedSource = action->property(kSourceProperty).toString();
+        if (!storedSource.isEmpty() && g_translations.value(storedSource) == displayed)
+            return storedSource;
+        // Chinese menu text without our source marker belongs to Painter (or
+        // another plug-in), so it must not be offered as one of our entries.
+        for (const QChar character : displayed) {
+            const uint code = character.unicode();
+            if ((code >= 0x3400 && code <= 0x4DBF) ||
+                (code >= 0x4E00 && code <= 0x9FFF))
+                return {};
+        }
+    } else if (auto *button = qobject_cast<QAbstractButton *>(widget))
         displayed = button->text();
     else if (auto *label = qobject_cast<QLabel *>(widget))
         displayed = label->text();
@@ -509,30 +548,55 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     if (!storedSource.isEmpty() && g_translations.value(storedSource) == displayed)
         return storedSource;
     const auto original = g_originals.constFind(displayed);
-    return original == g_originals.cend() ? displayed : original.value();
+    if (original != g_originals.cend())
+        return original.value();
+    for (const QChar character : displayed) {
+        const uint code = character.unicode();
+        if ((code >= 0x3400 && code <= 0x4DBF) ||
+            (code >= 0x4E00 && code <= 0x9FFF))
+            return {};
+    }
+    return displayed;
 }
 
 bool saveTranslation(const QString &source, const QString &target, QString *error) {
-    const QString translationPath = g_translationPaths.value(source);
+    const QString translationPath = g_translationPaths.value(source, g_fallbackPath);
     if (translationPath.isEmpty()) {
         if (error)
-            *error = QStringLiteral("无法确定该词条所属的原始翻译文件。");
+            *error = QStringLiteral("未配置可写入的翻译文件。");
         return false;
     }
 
     QJsonObject root;
     QFile existing(translationPath);
-    if (existing.exists() && existing.open(QIODevice::ReadOnly)) {
+    const bool existed = existing.exists();
+    if (existed && existing.open(QIODevice::ReadOnly)) {
         QJsonParseError parseError;
         const QJsonDocument document =
             QJsonDocument::fromJson(existing.readAll(), &parseError);
-        if (parseError.error == QJsonParseError::NoError && document.isObject())
-            root = document.object();
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            if (error)
+                *error = QStringLiteral("Translation JSON is invalid: %1")
+                             .arg(translationPath);
+            existing.close();
+            return false;
+        }
+        root = document.object();
         existing.close();
+    } else if (existed) {
+        if (error)
+            *error = existing.errorString();
+        return false;
     }
 
-    if (root.value(QStringLiteral("$schema")).toString() !=
-        QStringLiteral("sp-translation-v1")) {
+    if (!existed && translationPath == g_fallbackPath) {
+        root.insert(QStringLiteral("$schema"), QStringLiteral("sp-translation-v1"));
+        root.insert(QStringLiteral("id"), QStringLiteral("user-added-translations"));
+        root.insert(QStringLiteral("language"), QStringLiteral("zh-CN"));
+        root.insert(QStringLiteral("description"),
+                    QStringLiteral("Translations added from Substance 3D Painter"));
+    } else if (root.value(QStringLiteral("$schema")).toString() !=
+               QStringLiteral("sp-translation-v1")) {
         if (error)
             *error = QStringLiteral("原始翻译文件格式无效：%1").arg(translationPath);
         return false;
@@ -559,6 +623,7 @@ bool saveTranslation(const QString &source, const QString &target, QString *erro
             *error = output.errorString();
         return false;
     }
+    g_translationPaths.insert(source, translationPath);
     return true;
 }
 
@@ -636,6 +701,32 @@ protected:
         if (!g_enabled)
             return false;
         const auto type = event->type();
+        if (type == QEvent::Leave || type == QEvent::Hide) {
+            auto *widget = qobject_cast<QWidget *>(object);
+            if (widget && g_originalTooltipOwner == widget) {
+                QToolTip::hideText();
+                g_originalTooltipOwner.clear();
+            }
+        }
+        if (type == QEvent::MouseButtonPress) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            auto *menu = qobject_cast<QMenu *>(object);
+            if (menu && mouse->button() == Qt::RightButton &&
+                (mouse->modifiers() & Qt::ControlModifier)) {
+                const QString source = contextSourceAt(menu, mouse->position().toPoint());
+                if (!source.isEmpty()) {
+                    QPointer<QWidget> safeWindow(menu->window());
+                    QTimer::singleShot(0, qApp, [source, safeWindow]() {
+                        QWidget *parent = safeWindow.data();
+                        if (!parent)
+                            parent = QApplication::activeWindow();
+                        editTranslation(source, parent);
+                    });
+                    event->accept();
+                    return true;
+                }
+            }
+        }
         if (type == QEvent::ContextMenu) {
             auto *context = static_cast<QContextMenuEvent *>(event);
             // A plain right-click belongs entirely to Painter. Translation
@@ -660,12 +751,15 @@ protected:
             auto *help = static_cast<QHelpEvent *>(event);
             if (shouldSuppressTooltip(widget)) {
                 QToolTip::hideText();
+                if (g_originalTooltipOwner == widget)
+                    g_originalTooltipOwner.clear();
                 event->accept();
                 return true;
             }
             const QString source = originalTextAt(widget, help->pos());
             if (!source.isNull()) {
                 QToolTip::showText(help->globalPos(), source, widget);
+                g_originalTooltipOwner = widget;
                 event->accept();
                 return true;
             }
@@ -713,7 +807,7 @@ void pinThisDll() {
 }
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 5; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 6; }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
     const wchar_t *source, const wchar_t *path) {
@@ -721,6 +815,11 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
         return;
     g_translationPaths.insert(QString::fromWCharArray(source),
                               QString::fromWCharArray(path));
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_path(
+    const wchar_t *path) {
+    g_fallbackPath = path ? QString::fromWCharArray(path) : QString();
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_clear_translations() {

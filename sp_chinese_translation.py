@@ -29,7 +29,7 @@ IS_TRANSLATION_ENABLED = True
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
 NATIVE_DIR = os.path.join(PLUGIN_DIR, "native")
-PLUGIN_DISPLAY_NAME = "中文翻译补全插件插件"
+PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
 
 
 # ==========================================

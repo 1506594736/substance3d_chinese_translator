@@ -1,0 +1,10 @@
+^C:\USERS\WIN10\DESKTOP\SP插件\NATIVE\BUILD\CMAKEFILES\EB11EAE0345F52D2A48B9D3B54F62458\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/win10/Desktop/sp插件/native -BC:/Users/win10/Desktop/sp插件/native/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/win10/Desktop/sp插件/native/build/sp_native_asset_delegate.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

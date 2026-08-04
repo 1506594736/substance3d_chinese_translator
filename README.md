@@ -159,16 +159,17 @@ translations\official_assets_zh.json
 ```text
 sp_chinese_translation/
 ├─ __init__.py                         Python 插件入口和词条提取器
-├─ native/
-│  └─ sp_native_asset_delegate.dll     原生界面与资源列表翻译模块
+├─ packages/
+│  ├─ sp_native_asset_delegate.dll     原生界面与资源列表翻译模块
+│  └─ ...                              资源容器解析所需的精简 Python 依赖
 ├─ translations/
 │  ├─ official_assets_zh.json          默认中文词库
 │  └─ user_added_zh.json               无法溯源时按需创建的用户词库
-├─ vendor/                             资源容器解析所需的精简 Python 依赖
-└─ THIRD_PARTY_LICENSES/                第三方依赖许可证
+└─ THIRD_PARTY_LICENSES.txt              第三方依赖许可证（合并文件）
 ```
 
-`vendor` 和 `THIRD_PARTY_LICENSES` 属于插件运行依赖及其许可证文件，发布或安装完整功能版本时请保留。
+`packages` 属于插件运行依赖，`THIRD_PARTY_LICENSES.txt` 是随附的第三方许可证文件，
+发布或安装完整功能版本时请保留。
 
 ## 卸载
 
@@ -191,4 +192,10 @@ sp_chinese_translation/
 
 ## 许可证
 
-项目许可证见根目录 `LICENSE`。第三方组件许可证见插件包中的 `THIRD_PARTY_LICENSES` 目录。
+项目许可证见根目录 `LICENSE`。第三方组件许可证见插件包中的 `THIRD_PARTY_LICENSES.txt`。
+
+## 仓库结构
+
+开发者请参阅根目录《整理说明.md》：插件源码位于 `source/sp_chinese_translation/`，
+C++ 源码位于 `source/c++/`，工具脚本统一在 `scripts/`，
+发布包由 `scripts/build_package.py` 生成到 `dist/sp_chinese_translation.zip`。

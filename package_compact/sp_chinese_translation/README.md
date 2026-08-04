@@ -27,12 +27,13 @@
 
 ## 安装方法
 
-1. 解压发布包 `sp_chinese_translation.zip`。
-2. 将整个 `sp_chinese_translation` 文件夹复制到：
+1. 在以下目录中新建 `sp_chinese_translation` 文件夹：
 
    ```text
    C:\Users\你的用户名\Documents\Adobe\Adobe Substance 3D Painter\python\plugins\
    ```
+
+2. 将发布包 `sp_chinese_translation.zip` 直接解压到这个新建文件夹。压缩包根目录就是插件内容，不再额外包含同名外层目录。
 
 3. 安装后的入口文件应位于：
 

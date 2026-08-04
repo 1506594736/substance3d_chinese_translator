@@ -695,7 +695,7 @@ def _parse_asset_xml(path, attributes):
                 if attribute not in selected and not is_selected_label:
                     continue
                 value = raw_value.strip()
-                if value:
+                if value and not _contains_han(value):
                     items.add(value)
     except Exception:
         raise
@@ -719,13 +719,13 @@ def _parse_glsl_metadata(path, attributes):
                 is_label = "label" in selected and re.fullmatch(r"label\d*", key)
                 if isinstance(child, str) and (key in selected or is_label):
                     clean = child.strip()
-                    if clean:
+                    if clean and not _contains_han(clean):
                         items.add(clean)
                 elif key == "values" and "values" in selected and isinstance(child, dict):
                     # Combobox captions are the keys; their values are shader constants.
                     items.update(
-                        str(caption).strip() for caption in child
-                        if str(caption).strip()
+                        clean for caption in child
+                        if (clean := str(caption).strip()) and not _contains_han(clean)
                     )
                 else:
                     collect(child)
@@ -762,7 +762,9 @@ def _parse_glsl_metadata(path, attributes):
             r"(?:DisplayName|displayName|ui_name)\s*\(\s*[\"']([^\"']+)[\"']\s*\)",
             content,
         ):
-            items.add(match.group(1).strip())
+            clean = match.group(1).strip()
+            if clean and not _contains_han(clean):
+                items.add(clean)
     return items
 
 
@@ -1108,7 +1110,7 @@ class LabelExtractorDialog(QtWidgets.QDialog):
                 }]
                 for name in dirs:
                     clean_name = name.strip()
-                    if clean_name:
+                    if clean_name and not _contains_han(clean_name):
                         self._items.add(clean_name)
         self._failed = []
         self._cancelled = False
@@ -1198,7 +1200,8 @@ class LabelExtractorDialog(QtWidgets.QDialog):
             # Container names are always visible asset names and are therefore
             # mandatory. The option only controls ordinary file names.
             file_name = pathlib.Path(asset_path).stem.strip()
-            if file_name and (is_container or self._include_file_names):
+            if (file_name and not _contains_han(file_name)
+                    and (is_container or self._include_file_names)):
                 self._items.add(file_name)
             if is_container:
                 with tempfile.TemporaryDirectory(prefix="sp_label_extract_") as temporary:
@@ -1254,7 +1257,18 @@ class LabelExtractorDialog(QtWidgets.QDialog):
             self.status_label.setText("已取消；没有写入输出文件")
             return
 
-        translations = self._load_existing_translations()
+        # Chinese source strings are already localized and must never become
+        # translation keys. Filtering existing output as well keeps repeated
+        # extraction runs consistent with this rule.
+        translations = {
+            source: target
+            for source, target in self._load_existing_translations().items()
+            if not _contains_han(source)
+        }
+        self._items = {
+            source for source in self._items
+            if source and not _contains_han(source)
+        }
         for source in self._items:
             translations.setdefault(source, "")
         payload = {

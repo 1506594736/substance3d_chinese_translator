@@ -91,8 +91,8 @@ QString translated(const QString &text, bool removeMnemonic = false) {
     if (!g_enabled)
         return {};
     QString key = text.trimmed();
-    if (removeMnemonic)
-        key.remove(u'&');
+    if (key.isEmpty())
+        return {};
     // Painter's own localization wins. Instance-specific source properties,
     // not this global lookup, handle text previously produced by the plug-in.
     for (const QChar character : key) {
@@ -100,6 +100,14 @@ QString translated(const QString &text, bool removeMnemonic = false) {
         if ((code >= 0x3400 && code <= 0x4DBF) ||
             (code >= 0x4E00 && code <= 0x9FFF))
             return {};
+    }
+    if (removeMnemonic) {
+        // Prefer the exact dictionary key (e.g. "R&D"); fall back to the
+        // mnemonic-stripped form that Painter actually displays.
+        const auto exact = g_translations.constFind(key);
+        if (exact != g_translations.cend())
+            return exact.value();
+        key.remove(u'&');
     }
     const auto found = g_translations.constFind(key);
     return found == g_translations.cend() ? QString() : found.value();
@@ -1024,6 +1032,28 @@ void restoreTranslatedWidget(QWidget *widget) {
     widget->setProperty(kSourceProperty, QVariant());
 }
 
+void restoreLayersPanelOriginals() {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    if (QCoreApplication::closingDown())
+        return;
+#endif
+    for (QWidget *widget : QApplication::allWidgets()) {
+        if (widget && isInsideLayersPanel(widget))
+            restoreTranslatedWidget(widget);
+    }
+}
+
+void restoreAllTranslatedWidgets() {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    if (QCoreApplication::closingDown())
+        return;
+#endif
+    for (QWidget *widget : QApplication::allWidgets()) {
+        if (widget)
+            restoreTranslatedWidget(widget);
+    }
+}
+
 void setTranslateLayersPanel(bool enabled) {
     if (g_translateLayersPanel == enabled)
         return;
@@ -1032,10 +1062,7 @@ void setTranslateLayersPanel(bool enabled) {
         refreshTranslatedViews();
         return;
     }
-    for (QWidget *widget : QApplication::allWidgets()) {
-        if (isInsideLayersPanel(widget))
-            restoreTranslatedWidget(widget);
-    }
+    restoreLayersPanelOriginals();
 }
 
 void editTranslation(const QString &source, const QString &controlType,
@@ -1235,6 +1262,10 @@ QTimer *g_fallbackTimer = nullptr;
 void scanVisibleWidgets() {
     if (!g_enabled)
         return;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    if (QCoreApplication::closingDown())
+        return;
+#endif
     for (QWidget *widget : QApplication::allWidgets()) {
         if (widget && widget->isVisible())
             translateWidget(widget);
@@ -1249,7 +1280,7 @@ bool pinThisDll() {
 }
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 8; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 9; }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
     const wchar_t *source, const wchar_t *path) {
@@ -1289,8 +1320,13 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_translation(
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enabled) {
     g_enabled = enabled != 0;
-    if (g_enabled)
+    if (g_enabled) {
         scanVisibleWidgets();
+    } else {
+        // Disabling the plug-in must immediately restore every widget that
+        // was translated by this delegate back to its original text.
+        restoreAllTranslatedWidgets();
+    }
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translation(

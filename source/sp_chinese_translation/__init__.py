@@ -12,11 +12,14 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import struct
 import sys
 import tempfile
+import threading
 import time
 import traceback
+import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -34,6 +37,10 @@ WA_DELETE_ON_CLOSE = (QtCore.Qt.WA_DeleteOnClose if QT_MAJOR == 5
                       else QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 WAIT_CURSOR = (QtCore.Qt.WaitCursor if QT_MAJOR == 5
                else QtCore.Qt.CursorShape.WaitCursor)
+FRAME_STYLED_PANEL = (QtWidgets.QFrame.Shape.StyledPanel if QT_MAJOR >= 6
+                      else QtWidgets.QFrame.StyledPanel)
+WINDOW_MODAL = (QtCore.Qt.WindowModal if QT_MAJOR == 5
+                else QtCore.Qt.WindowModality.WindowModal)
 QAction = QtWidgets.QAction if QT_MAJOR == 5 else QtGui.QAction
 
 IS_APP_QUITTING = False
@@ -50,8 +57,15 @@ DELEGATE_DLL_PATH = os.path.join(
     else "sp_translation_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
+PLUGIN_VERSION = "2.0.1"
+PLUGIN_REPO = "iillya/sp_chinese_translation"
+PLUGIN_RELEASE_URL = (
+    f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
+)
+PLUGIN_ASSET_NAME = "sp_chinese_translation.zip"
 MAX_ARCHIVE_MEMBERS = 50_000
 MAX_NESTED_ARCHIVES = 128
+MAX_EXTRACT_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB per container
 
 def _read_bool_setting(key, default):
     """Read a boolean without PySide2's unreliable ``type=bool`` overload."""
@@ -201,8 +215,8 @@ def _load_native_delegate():
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
         api_version = dll.sp_delegate_api_version()
-        if api_version != 8:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 8，实际 {api_version}")
+        if api_version != 9:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 9，实际 {api_version}")
             return None
         _native_delegate = dll
     except Exception as exc:
@@ -236,7 +250,7 @@ def _sync_native_dictionary():
                 source_path = TRANSLATE_SOURCE_FILES.get(source)
                 if source_path:
                     dll.sp_delegate_set_translation_path(source, source_path)
-        dll.sp_delegate_set_enabled(1)
+        dll.sp_delegate_set_enabled(int(IS_TRANSLATION_ENABLED))
         return True
     except Exception as exc:
         print(">>> 原生资源翻译字典同步失败:", exc)
@@ -273,7 +287,7 @@ def _load_archive_modules():
         py7zr = None
     if py7zr is not None:
         try:
-            # 路径安全已由 _safe_archive_names 把关；py7zr 的 resolve() 路径
+            # 路径安全已由 _safe_archive_names 把关。py7zr 的 resolve() 路径
             # 校验在 Painter 运行时会对个别文件误判（Bad7zFile:
             # "Specified path is bad"），这里放行 resolve 比较、保留 .. 检查。
             import py7zr.helpers as _py7zr_helpers
@@ -386,7 +400,7 @@ def _parse_spsm_layer_names(path):
     """从 .spsm（HDF5 智能材质）的 preset.bin 中解析需要翻译的图层名。
 
     Painter 把智能材质的图层结构序列化在 preset.bin 里，图层名以
-    “4 字节长度 + UTF-8”字符串存放。字段名通常重复出现；图层名一般唯一，
+    “4 字节长度 + UTF-8”字符串存放。字段名通常重复出现。图层名一般唯一，
     且多为“含空格”或“标题式单词”。已含中文的图层名无需翻译，跳过。
     """
     items = set()
@@ -426,7 +440,9 @@ def _parse_glsl_metadata(path, attributes):
     items = set()
     content = path.read_text(encoding="utf-8-sig", errors="ignore")
 
-    def collect(value):
+    def collect(value, depth=0):
+        if depth > 64:
+            return
         if isinstance(value, dict):
             for key, child in value.items():
                 key = str(key)
@@ -442,10 +458,10 @@ def _parse_glsl_metadata(path, attributes):
                         if clean and not _contains_han(clean):
                             items.add(clean)
                 else:
-                    collect(child)
+                    collect(child, depth + 1)
         elif isinstance(value, list):
             for child in value:
-                collect(child)
+                collect(child, depth + 1)
 
     # Join the //: payloads first: Painter commonly formats one JSON annotation
     # over several comment lines. raw_decode also handles top-level arrays used
@@ -454,21 +470,24 @@ def _parse_glsl_metadata(path, attributes):
         line[line.find("//:") + 3:].strip()
         for line in content.splitlines() if "//:" in line
     )
-    decoder = json.JSONDecoder()
-    cursor = 0
-    while cursor < len(annotation):
-        starts = [position for position in (
-            annotation.find("{", cursor), annotation.find("[", cursor)
-        ) if position >= 0]
-        if not starts:
-            break
-        start = min(starts)
-        try:
-            value, end = decoder.raw_decode(annotation, start)
-            collect(value)
-            cursor = end
-        except ValueError:
-            cursor = start + 1
+    # Bound the amount of annotation text parsed in one pass; a malformed or
+    # oversized GLSL file must not stall extraction for minutes.
+    if len(annotation) <= 4 * 1024 * 1024:
+        decoder = json.JSONDecoder()
+        cursor = 0
+        while cursor < len(annotation):
+            starts = [position for position in (
+                annotation.find("{", cursor), annotation.find("[", cursor)
+            ) if position >= 0]
+            if not starts:
+                break
+            start = min(starts)
+            try:
+                value, end = decoder.raw_decode(annotation, start)
+                collect(value)
+                cursor = end
+            except ValueError:
+                cursor = start + 1
 
     # Also support common display-name annotations used by imported GLSL.
     if "label" in selected:
@@ -485,9 +504,10 @@ def _parse_glsl_metadata(path, attributes):
 class ChineseTranslationToolDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("中文翻译工具")
+        self.setWindowTitle(f"中文翻译工具 v{PLUGIN_VERSION}")
         self.setObjectName("sp_chinese_translation_tool")
-        self.setMinimumSize(720, 570)
+        self.setMinimumSize(780, 640)
+        self.setSizeGripEnabled(True)
         self.setAttribute(WA_DELETE_ON_CLOSE, False)
         self._files = []
         self._index = 0
@@ -501,31 +521,70 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
-        intro = QtWidgets.QLabel(
-            "递归扫描所有资源文件，提取资源内部的词条。"
-            "普通文件名和文件夹名可按需提取，"
-            "生成可直接编辑的 *_zh.json 翻译包。"
-        )
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
 
-        translation_group = QtWidgets.QGroupBox("界面翻译", self)
+        translation_group = QtWidgets.QFrame(self)
+        translation_group.setFrameShape(FRAME_STYLED_PANEL)
         translation_layout = QtWidgets.QVBoxLayout(translation_group)
+        translation_header = QtWidgets.QHBoxLayout()
+        translation_title = QtWidgets.QLabel(
+            "界面翻译（即时生效）", translation_group
+        )
+        title_font = translation_title.font()
+        title_font.setBold(True)
+        translation_title.setFont(title_font)
+        translation_header.addWidget(translation_title)
+        translation_header.addStretch(1)
+        self.update_button = QtWidgets.QPushButton(
+            "检查插件更新", translation_group
+        )
+        self.update_button.setToolTip(
+            "从 GitHub 检查最新版本。发现新版本时可下载安装包。"
+        )
+        self.update_button.clicked.connect(
+            lambda: _check_updates(self)
+        )
+        translation_header.addWidget(self.update_button)
+        translation_layout.addLayout(translation_header)
+        self.translation_enabled_check = QtWidgets.QCheckBox(
+            "启用插件翻译（翻译 SP 界面）",
+            translation_group,
+        )
+        self.translation_enabled_check.setChecked(IS_TRANSLATION_ENABLED)
+        self.translation_enabled_check.setToolTip(
+            "勾选时插件翻译生效，自动翻译 Substance 3D Painter 的界面控件。"
+            "取消勾选时停止翻译并立即恢复所有界面原文显示。"
+            "仅影响显示，不修改项目数据。"
+        )
+        self.translation_enabled_check.toggled.connect(
+            _set_translation_enabled
+        )
+        translation_layout.addWidget(self.translation_enabled_check)
+
         self.layers_translation_check = QtWidgets.QCheckBox(
             "翻译图层面板（包括用户创建的图层名称）",
             translation_group,
         )
         self.layers_translation_check.setChecked(TRANSLATE_LAYERS_PANEL)
         self.layers_translation_check.setToolTip(
-            "开启后使用图层面板专用规则翻译全部控件和图层名称；仅改变显示，不修改项目数据。"
+            "开启后使用图层面板专用规则翻译全部控件和图层名称。仅改变显示，不修改项目数据。"
         )
         self.layers_translation_check.toggled.connect(
             _set_layers_panel_translation
         )
         translation_layout.addWidget(self.layers_translation_check)
+        translation_hint = QtWidgets.QLabel(
+            "提示：取消勾选“启用插件翻译”后，整个界面立即恢复英文原文。"
+            "仅关闭“翻译图层面板”则只恢复图层面板中的原文。",
+            translation_group,
+        )
+        translation_hint.setWordWrap(True)
+        translation_hint.setStyleSheet("color: gray;")
+        translation_layout.addWidget(translation_hint)
         layout.addWidget(translation_group)
+        self._update_translation_controls()
 
-        form = QtWidgets.QFormLayout()
+        extract_group = QtWidgets.QGroupBox("提取设置", self)
+        form = QtWidgets.QFormLayout(extract_group)
         self.folder_edit = QtWidgets.QLineEdit()
         folder_row = QtWidgets.QHBoxLayout()
         folder_row.addWidget(self.folder_edit, 1)
@@ -546,7 +605,10 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         form.addRow("翻译包 ID", self.package_id_edit)
         self.description_edit = QtWidgets.QLineEdit("Extracted Substance asset labels")
         form.addRow("说明", self.description_edit)
+        layout.addWidget(extract_group)
 
+        options_group = QtWidgets.QGroupBox("提取选项", self)
+        options_form = QtWidgets.QFormLayout(options_group)
         filename_row = QtWidgets.QHBoxLayout()
         self.filename_check = QtWidgets.QCheckBox("提取普通文件名")
         self.filename_check.setChecked(True)
@@ -555,7 +617,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         filename_row.addWidget(self.filename_check)
         filename_row.addWidget(self.foldername_check)
         filename_row.addStretch(1)
-        form.addRow("名称", filename_row)
+        options_form.addRow("名称", filename_row)
 
         attribute_row = QtWidgets.QHBoxLayout()
         self.label_check = QtWidgets.QCheckBox("提取 label")
@@ -595,11 +657,13 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             if widget is not None:
                 index = attribute_grid.count()
                 attribute_grid.addWidget(widget, index // 3, index % 3)
-        form.addRow("词条属性", attribute_widget)
-        layout.addLayout(form)
+        options_form.addRow("词条属性", attribute_widget)
+        layout.addWidget(options_group)
 
         note = QtWidgets.QLabel(
-            "新词条的译文为空字符串时插件会自动忽略空译文。若输出文件已存在，将保留其中已有译文。"
+            "递归扫描所有资源文件，提取资源内部的词条，普通文件名和文件夹名可按需提取。\n"
+            "自动生成可直接编辑的 *_zh.json 字典，"
+            "若输出的字典文件已存在，将保留其中已有译文。"
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -612,6 +676,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         layout.addWidget(self.status_label)
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(5000)
         layout.addWidget(self.log, 1)
 
         self.button_container = QtWidgets.QWidget(self)
@@ -644,6 +709,11 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.cancel_button.clicked.connect(self._cancel)
         self.close_button.clicked.connect(self.close)
         layout.addWidget(self.button_container)
+
+    def _update_translation_controls(self):
+        """按总开关状态联动图层翻译子控件是否可用。"""
+        master_on = self.translation_enabled_check.isChecked()
+        self.layers_translation_check.setEnabled(master_on)
 
     def _open_translations_directory(self):
         os.makedirs(TRANSLATIONS_DIR, exist_ok=True)
@@ -874,6 +944,14 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 _safe_archive_names(entry.filename for entry in entries)
                 if any(_archive_entry_is_link(entry) for entry in entries):
                     raise ValueError("容器包含不允许的符号链接")
+                total_bytes = sum(
+                    int(getattr(entry, "uncompressed", 0) or 0)
+                    for entry in entries
+                )
+                if total_bytes > MAX_EXTRACT_BYTES:
+                    raise ValueError(
+                        f"容器解压后体积过大（{total_bytes / 2**30:.1f} GiB）"
+                    )
                 archive.extractall(path=destination)
             return "7z"
         if zipfile.is_zipfile(asset_path):
@@ -883,16 +961,35 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 if any((entry.external_attr >> 16) & 0o170000 == 0o120000
                        for entry in entries):
                     raise ValueError("容器包含不允许的符号链接")
+                total_bytes = sum(entry.file_size for entry in entries)
+                if total_bytes > MAX_EXTRACT_BYTES:
+                    raise ValueError(
+                        f"容器解压后体积过大（{total_bytes / 2**30:.1f} GiB）"
+                    )
                 archive.extractall(path=destination)
             return "zip"
         if h5py is not None and h5py.is_hdf5(asset_path):
             with h5py.File(asset_path, mode="r") as archive:
                 dataset_names = []
+                total_bytes = 0
+
+                def _record_dataset(name, obj):
+                    nonlocal total_bytes
+                    if isinstance(obj, h5py.Dataset):
+                        dataset_names.append(name)
+                        try:
+                            total_bytes += int(obj.size) * int(obj.dtype.itemsize)
+                        except Exception:
+                            pass
+
                 archive.visititems(
-                    lambda name, obj: dataset_names.append(name)
-                    if isinstance(obj, h5py.Dataset) else None
+                    _record_dataset
                 )
                 _safe_archive_names(dataset_names)
+                if total_bytes > MAX_EXTRACT_BYTES:
+                    raise ValueError(
+                        f"容器解压后体积过大（{total_bytes / 2**30:.1f} GiB）"
+                    )
                 for name in dataset_names:
                     dataset = archive[name]
                     value = dataset[()]
@@ -1040,7 +1137,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
     def _finish(self, cancelled):
         self._set_running(False)
         if cancelled:
-            self.status_label.setText("已取消；没有写入输出文件")
+            self.status_label.setText("已取消，没有写入输出文件。")
             return
 
         # Chinese source strings are already localized and must never become
@@ -1134,6 +1231,586 @@ def _set_layers_panel_translation(enabled):
             print(">>> 切换图层面板翻译失败:", exc)
 
 
+def _set_translation_enabled(enabled):
+    """Toggle the whole translation engine on/off.
+
+    Unchecking the master switch stops translation and restores every
+    translated widget in the interface back to its original text.
+    """
+    global IS_TRANSLATION_ENABLED
+    IS_TRANSLATION_ENABLED = bool(enabled)
+    QtCore.QSettings().setValue(
+        "sp_chinese_translation/enabled", IS_TRANSLATION_ENABLED
+    )
+    dll = _load_native_delegate()
+    if dll is not None:
+        try:
+            dll.sp_delegate_set_enabled(int(IS_TRANSLATION_ENABLED))
+        except Exception as exc:
+            print(">>> 切换插件翻译总开关失败:", exc)
+    if is_safe(_label_extractor_dialog):
+        try:
+            _label_extractor_dialog._update_translation_controls()
+        except Exception:
+            pass
+
+
+def _version_tuple(version):
+    """Normalize ``v2.0.0`` / ``2.0`` / ``2.0.0-rc1`` to (major, minor, patch)."""
+    text = str(version).strip().lstrip("vV")
+    parts = []
+    for part in re.split(r"[._-]", text):
+        digits = re.match(r"\d+", part)
+        if not digits:
+            break
+        parts.append(int(digits.group()))
+        if len(parts) >= 3:
+            break
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def _http_get_json(url, timeout=15):
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "sp_chinese_translation-updater"}
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _latest_release_info():
+    """Query the GitHub Releases API for the newest official release."""
+    data = _http_get_json(PLUGIN_RELEASE_URL)
+    tag = (data.get("tag_name") or "").strip()
+    if not tag:
+        raise RuntimeError("GitHub 返回的发布信息缺少版本号。")
+    version = tag.lstrip("vV")
+    download_url = ""
+    for asset in data.get("assets") or []:
+        if asset.get("name") == PLUGIN_ASSET_NAME:
+            download_url = asset.get("browser_download_url") or ""
+            break
+    if not download_url:
+        # Accept versioned names such as sp_chinese_translation_2.0.1.zip.
+        for asset in data.get("assets") or []:
+            name = (asset.get("name") or "").strip()
+            lowered = name.casefold()
+            if lowered.startswith("sp_chinese_translation") and lowered.endswith(
+                ".zip"
+            ):
+                download_url = asset.get("browser_download_url") or ""
+                break
+    if not download_url:
+        raise RuntimeError(
+            f"最新发布 {tag} 中没有找到 {PLUGIN_ASSET_NAME} 安装包"
+            "（支持 sp_chinese_translation.zip 或 sp_chinese_translation_版本.zip）。"
+        )
+    notes = data.get("body") or ""
+    return version, download_url, notes
+
+class _DownloadCancelled(Exception):
+    pass
+
+
+class _DownloadProgressDialog(QtWidgets.QDialog):
+    """Modal download progress dialog with a cancel button.
+
+    Built from plain widgets instead of QProgressDialog so the label, the
+    progress bar and the cancel button always render inside Painter's dark
+    theme.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("下载更新")
+        self.setWindowModality(WINDOW_MODAL)
+        self.setMinimumWidth(420)
+        self.setMinimumHeight(140)
+        layout = QtWidgets.QVBoxLayout(self)
+        self._label = QtWidgets.QLabel("正在下载更新…", self)
+        self._label.setWordWrap(True)
+        layout.addWidget(self._label)
+        self._bar = QtWidgets.QProgressBar(self)
+        self._bar.setRange(0, 0)
+        layout.addWidget(self._bar)
+        self._cancel_button = QtWidgets.QPushButton("取消", self)
+        self._cancel_button.setAutoDefault(False)
+        align_right = (
+            QtCore.Qt.AlignmentFlag.AlignRight
+            if QT_MAJOR >= 6
+            else QtCore.Qt.AlignRight
+        )
+        layout.addWidget(self._cancel_button, alignment=align_right)
+        self._cancelled = False
+        self._cancel_button.clicked.connect(self._request_cancel)
+
+    def _request_cancel(self):
+        self._cancelled = True
+        self._cancel_button.setEnabled(False)
+        self._label.setText("正在取消…")
+
+    def reject(self):
+        self._cancelled = True
+        super().reject()
+
+    def set_progress(self, downloaded, total):
+        if total > 0:
+            self._bar.setRange(0, 100)
+            self._bar.setValue(int(downloaded * 100.0 / total))
+            self._label.setText(
+                f"正在下载更新… "
+                f"{downloaded // (1024 * 1024)} MB / "
+                f"{total // (1024 * 1024)} MB"
+            )
+        else:
+            self._bar.setRange(0, 0)
+
+    def set_finished(self):
+        self._bar.setRange(0, 100)
+        self._bar.setValue(100)
+        self._label.setText("下载完成")
+
+    def is_cancelled(self):
+        return self._cancelled
+
+
+def _download_update(url, destination, progress=None, is_cancelled=None):
+    """Download the release ZIP and verify it is a complete plug-in package.
+
+    ``progress(downloaded_bytes, total_bytes)`` is invoked as data arrives;
+    ``is_cancelled()`` is polled between chunks and may raise a
+    ``_DownloadCancelled`` error through the download loop.
+    """
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "sp_chinese_translation-updater"}
+    )
+    with urllib.request.urlopen(request, timeout=180) as response:
+        try:
+            total_bytes = int(response.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            total_bytes = 0
+        with open(destination, "wb") as stream:
+            downloaded = 0
+            while True:
+                if is_cancelled is not None and is_cancelled():
+                    raise _DownloadCancelled("下载已取消")
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                stream.write(chunk)
+                downloaded += len(chunk)
+                if progress is not None:
+                    progress(downloaded, total_bytes)
+    with zipfile.ZipFile(destination) as archive:
+        names = set(archive.namelist())
+        required = {
+            "__init__.py",
+            "translations/official_assets_zh.json",
+        }
+        missing = required.difference(names)
+        if missing:
+            raise RuntimeError(
+                f"下载的发布包缺少必要文件: {sorted(missing)}"
+            )
+    return destination
+
+
+def _check_updates(parent=None):
+    """Check GitHub for a newer release and download it when available."""
+    if parent is None:
+        parent = QtWidgets.QApplication.activeWindow()
+    try:
+        QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
+        try:
+            version, download_url, notes = _latest_release_info()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        if _version_tuple(version) <= _version_tuple(PLUGIN_VERSION):
+            QtWidgets.QMessageBox.information(
+                parent,
+                "检查更新",
+                f"当前已是最新版本（{PLUGIN_VERSION}）。",
+            )
+            return
+        preview = "\n".join(
+            line for line in notes.splitlines() if line.strip()
+        )[:300]
+        message = (
+            f"发现新版本 {version}（当前 {PLUGIN_VERSION}）。"
+            + (f"\n\n更新说明：\n{preview}" if preview else "")
+            + "\n\n是否下载安装包？"
+        )
+        result = QtWidgets.QMessageBox.question(
+            parent,
+            "发现新版本",
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if result != QtWidgets.QMessageBox.Yes:
+            return
+
+        destination = os.path.join(
+            os.path.dirname(PLUGIN_DIR),
+            f"sp_chinese_translation_{version}.zip",
+        )
+        progress_dialog = _DownloadProgressDialog(parent)
+        cancel_event = threading.Event()
+        state = {"downloaded": 0, "total": 0, "done": False, "error": None}
+
+        def _download_worker():
+            try:
+                _download_update(
+                    download_url,
+                    destination,
+                    lambda downloaded, total: state.update(
+                        downloaded=downloaded, total=total
+                    ),
+                    cancel_event.is_set,
+                )
+                state["done"] = True
+            except _DownloadCancelled:
+                state["done"] = True
+                state["error"] = "cancelled"
+            except Exception as exc:
+                state["done"] = True
+                state["error"] = str(exc)
+
+        def _on_cancel():
+            cancel_event.set()
+
+        progress_dialog._cancel_button.clicked.connect(_on_cancel)
+
+        worker = threading.Thread(target=_download_worker, daemon=True)
+        worker.start()
+
+        def _tick():
+            if cancel_event.is_set() or progress_dialog.is_cancelled():
+                progress_dialog.reject()
+                return
+            if state["done"]:
+                progress_dialog.set_finished()
+                progress_dialog.accept()
+                return
+            progress_dialog.set_progress(
+                state["downloaded"], state["total"]
+            )
+            QtCore.QTimer.singleShot(100, _tick)
+
+        # The modal event loop renders the dialog (layout is activated before
+        # the first paint) while the timer keeps the bar in sync with the
+        # background download thread.
+        QtCore.QTimer.singleShot(0, _tick)
+        progress_dialog.exec_()
+
+        cancelled = (
+            cancel_event.is_set() or progress_dialog.is_cancelled()
+        )
+        if cancelled:
+            cancel_event.set()
+            worker.join(timeout=5)
+            try:
+                os.remove(destination)
+            except OSError:
+                pass
+            return
+        worker.join(timeout=5)
+        error = state.get("error")
+        if error:
+            raise RuntimeError(error)
+        # Apply the package in place without closing Painter, then ask the
+        # user to restart so the new files (and native DLL) are loaded.
+        _apply_update_now(destination, parent)
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(
+            parent,
+            "检查更新失败",
+            f"无法获取最新版本：\n{exc}\n\n"
+            "请确认网络可访问 GitHub，稍后再试。",
+        )
+
+
+def _copy_file_safely(source, target):
+    """Copy ``source`` to ``target``, working around a locked native DLL.
+
+    A DLL mapped into Painter cannot be overwritten, but Windows allows it to
+    be renamed, so the old file is moved aside and the new one is written
+    under the original name. The running session keeps using the old image in
+    memory; the new file is loaded at the next start.
+    """
+    try:
+        shutil.copy2(source, target)
+        return
+    except PermissionError:
+        if not target.lower().endswith(".dll"):
+            raise
+        moved = target + ".old"
+        if os.path.isfile(moved):
+            try:
+                os.remove(moved)
+            except OSError:
+                pass
+        os.rename(target, moved)
+        shutil.copy2(source, target)
+
+
+def _copytree_merge(source, target):
+    """Copy a directory tree into a possibly existing target directory."""
+    if not os.path.isdir(target):
+        shutil.copytree(source, target)
+        return
+    for name in os.listdir(source):
+        src = os.path.join(source, name)
+        dst = os.path.join(target, name)
+        if os.path.isdir(src) and not os.path.islink(src):
+            _copytree_merge(src, dst)
+        else:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _copy_file_safely(src, dst)
+
+
+def _cleanup_pending_dll_files():
+    """Remove native DLLs renamed aside by a previous live update."""
+    try:
+        if not os.path.isdir(NATIVE_DIR):
+            return
+        for name in os.listdir(NATIVE_DIR):
+            if name.lower().endswith(".dll.old"):
+                try:
+                    os.remove(os.path.join(NATIVE_DIR, name))
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
+def _apply_update_now(zip_path, parent=None):
+    """Apply a downloaded release package in place, without closing Painter.
+
+    The old plug-in directory is backed up, every file shipped by the new
+    package is copied over it (a loaded native DLL is renamed aside first),
+    and the user's own translation JSON files are preserved. Painter is left
+    running; the new code and DLL only take effect after a restart.
+    """
+    if not os.path.isfile(zip_path):
+        QtWidgets.QMessageBox.warning(
+            parent,
+            "无法自动更新",
+            f"找不到已下载的更新包：\n{zip_path}\n请重新下载。",
+        )
+        return False
+
+    backup_dir = os.path.join(
+        os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+        "SPChineseTranslationBackup",
+    )
+    stage_dir = None
+    preserve_dir = None
+    QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
+    try:
+        stage_dir = tempfile.mkdtemp(prefix="sp_update_stage_")
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(stage_dir)
+        if not os.path.isfile(os.path.join(stage_dir, "__init__.py")):
+            raise RuntimeError("更新包缺少 __init__.py，已中止更新。")
+
+        if os.path.isdir(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        shutil.copytree(PLUGIN_DIR, backup_dir)
+
+        # Preserve the user's own translation JSON files.
+        preserve_dir = tempfile.mkdtemp(prefix="sp_update_preserve_")
+        old_translations = os.path.join(PLUGIN_DIR, "translations")
+        if os.path.isdir(old_translations):
+            for name in os.listdir(old_translations):
+                if name.lower().endswith(".json"):
+                    shutil.copy2(
+                        os.path.join(old_translations, name),
+                        os.path.join(preserve_dir, name),
+                    )
+
+        # Collect the file list shipped by the new package.
+        new_files = set()
+        for root, _dirs, files in os.walk(stage_dir):
+            for name in files:
+                rel = os.path.relpath(os.path.join(root, name), stage_dir)
+                new_files.add(rel.replace(os.sep, "/"))
+
+        # Replace every shipped file, tolerating the loaded native DLL.
+        for rel in sorted(new_files):
+            src = os.path.join(stage_dir, rel.replace("/", os.sep))
+            target = os.path.join(PLUGIN_DIR, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            _copy_file_safely(src, target)
+
+        # Remove stale files that no longer exist in the package, except for
+        # the user's translation JSON files that are restored below.
+        stale = []
+        for root, _dirs, files in os.walk(PLUGIN_DIR):
+            for name in files:
+                rel = os.path.relpath(os.path.join(root, name), PLUGIN_DIR)
+                rel_norm = rel.replace(os.sep, "/")
+                if rel_norm in new_files:
+                    continue
+                if (
+                    rel_norm.startswith("translations/")
+                    and name.lower().endswith(".json")
+                ):
+                    continue
+                stale.append((root, name))
+        for root, name in stale:
+            try:
+                os.remove(os.path.join(root, name))
+            except PermissionError:
+                if not name.lower().endswith(".dll.old"):
+                    raise
+            except OSError:
+                pass
+
+        # Restore user JSON files that the new package does not ship itself.
+        new_translations = os.path.join(PLUGIN_DIR, "translations")
+        os.makedirs(new_translations, exist_ok=True)
+        for name in os.listdir(preserve_dir):
+            target = os.path.join(new_translations, name)
+            if not os.path.isfile(target):
+                shutil.copy2(os.path.join(preserve_dir, name), target)
+
+        if not os.path.isfile(os.path.join(PLUGIN_DIR, "__init__.py")):
+            raise RuntimeError("替换后插件目录缺少 __init__.py。")
+
+        result_file = os.path.join(tempfile.gettempdir(), "sp_update_result.txt")
+        try:
+            with open(result_file, "w", encoding="utf-8") as stream:
+                stream.write("true\n更新已应用，本次启动已加载新版本。")
+        except OSError:
+            pass
+
+        # The package has been applied; do not leave the downloaded ZIP
+        # behind in the plug-ins folder. On failure it is kept for retry.
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+
+        # Restore the normal cursor before showing the dialog so the mouse
+        # does not keep spinning while the message is on screen.
+        QtWidgets.QApplication.restoreOverrideCursor()
+        QtWidgets.QMessageBox.information(
+            parent,
+            "更新已应用",
+            "新版本文件已写入插件目录。\n\n"
+            "请重启 Substance 3D Painter 以启用新版本。\n"
+            "当前会话继续使用旧版本，不会自动关闭。",
+        )
+        return True
+    except Exception as exc:
+        # Roll back to the backup so a failed update never leaves a broken
+        # plug-in directory.
+        try:
+            if os.path.isdir(backup_dir) and os.path.isfile(
+                os.path.join(backup_dir, "__init__.py")
+            ):
+                for name in os.listdir(PLUGIN_DIR):
+                    path = os.path.join(PLUGIN_DIR, name)
+                    try:
+                        if os.path.isdir(path) and not os.path.islink(path):
+                            shutil.rmtree(path, ignore_errors=True)
+                        else:
+                            os.remove(path)
+                    except OSError:
+                        pass
+                _copytree_merge(backup_dir, PLUGIN_DIR)
+        except Exception:
+            pass
+        QtWidgets.QApplication.restoreOverrideCursor()
+        QtWidgets.QMessageBox.warning(
+            parent,
+            "更新失败",
+            f"应用更新失败：\n{exc}\n\n插件目录已保持/恢复为原版本。",
+        )
+        return False
+    finally:
+        QtWidgets.QApplication.restoreOverrideCursor()
+        for path in (stage_dir, preserve_dir):
+            if path and os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+
+
+def _cleanup_update_remnants():
+    """Remove backups and temporary leftovers of a completed update."""
+    local_app_data = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    for name in ("SPChineseTranslationBackup", "SPChineseTranslationUpdate"):
+        path = os.path.join(local_app_data, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+    temp_dir = tempfile.gettempdir()
+    for name in ("sp_apply_update.ps1", "sp_update_result.txt"):
+        try:
+            os.remove(os.path.join(temp_dir, name))
+        except OSError:
+            pass
+    try:
+        for name in os.listdir(temp_dir):
+            if name.startswith("sp_update_stage") or name.startswith(
+                "sp_update_preserve"
+            ):
+                path = os.path.join(temp_dir, name)
+                try:
+                    if os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        os.remove(path)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _notify_update_result(main_window):
+    """Show the outcome of a background auto-update on the next start."""
+    result_file = os.path.join(tempfile.gettempdir(), "sp_update_result.txt")
+    if not os.path.isfile(result_file):
+        return
+    message = None
+    warning = False
+    update_ok = False
+    try:
+        with open(result_file, encoding="utf-8-sig") as stream:
+            lines = stream.read().splitlines()
+        if lines and lines[0].strip() == "true":
+            message = "插件已更新成功。\n\n" + "\n".join(lines[1:])
+            update_ok = True
+        elif lines:
+            message = "自动更新未完成：\n" + "\n".join(lines[1:])
+            warning = True
+    except Exception:
+        message = None
+    try:
+        os.remove(result_file)
+    except OSError:
+        pass
+    if update_ok:
+        # The new version is running, so the backup and temporary leftovers
+        # are removed before the success prompt is displayed.
+        _cleanup_update_remnants()
+    if message and is_safe(main_window):
+        if warning:
+            QtCore.QTimer.singleShot(
+                1500,
+                lambda: QtWidgets.QMessageBox.warning(
+                    main_window, "更新未完成", message
+                ),
+            )
+        else:
+            QtCore.QTimer.singleShot(
+                1500,
+                lambda: QtWidgets.QMessageBox.information(
+                    main_window, "插件已更新", message
+                ),
+            )
+
+
 def show_translation_tool():
     global _label_extractor_dialog
     if not is_safe(_label_extractor_dialog):
@@ -1176,7 +1853,6 @@ def close_plugin():
         except Exception:
             pass
     _label_extractor_action = None
-
     _label_extractor_menu_bar = None
 
     if _native_delegate is not None:
@@ -1219,10 +1895,15 @@ def start_plugin():
 
     IS_APP_QUITTING = False
     IS_CLEANING = False
-    IS_TRANSLATION_ENABLED = True
+    IS_TRANSLATION_ENABLED = _read_bool_setting(
+        "sp_chinese_translation/enabled", True
+    )
     TRANSLATE_LAYERS_PANEL = _read_bool_setting(
         "sp_chinese_translation/translate_layers_panel", True
     )
+
+    # Remove native DLLs renamed aside by a previous in-place update.
+    _cleanup_pending_dll_files()
 
     phase_started = time.perf_counter()
     load_translation_packages()
@@ -1240,6 +1921,8 @@ def start_plugin():
             ">>> 原生翻译引擎未完全启用: "
             f"dictionary={native_dictionary_ok}, ui={native_ui_ok}"
         )
+    if not IS_TRANSLATION_ENABLED:
+        _set_translation_enabled(False)
 
     main_window = sp.ui.get_main_window()
     # Painter starts this plugin while it is still populating the Python menu.
@@ -1247,6 +1930,9 @@ def start_plugin():
     # Painter's insertion separator, so wait until the menu build returns.
     QtCore.QTimer.singleShot(
         0, lambda window=main_window: _set_registered_plugin_display_name(window)
+    )
+    QtCore.QTimer.singleShot(
+        2000, lambda window=main_window: _notify_update_result(window)
     )
     _label_extractor_action = QAction("中文翻译工具", main_window)
     _label_extractor_action.setObjectName("sp_chinese_translation_tool_action")

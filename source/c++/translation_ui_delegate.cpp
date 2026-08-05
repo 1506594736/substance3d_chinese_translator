@@ -13,7 +13,11 @@
 #include <QtGui/QHelpEvent>
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QMouseEvent>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtGui/QAction>
+#else
+#include <QtWidgets/QAction>
+#endif
 #include <QtGui/QColor>
 #include <QtGui/QPainter>
 #include <QtGui/QPalette>
@@ -55,6 +59,13 @@ constexpr auto kSourceProperty = "_sp_translation_source";
 constexpr auto kComboSourcesProperty = "_sp_translation_combo_sources";
 constexpr auto kTabSourcesProperty = "_sp_translation_tab_sources";
 constexpr auto kTranslatingComboProperty = "_sp_translation_combo_busy";
+
+void resizeStringList(QStringList &values, int size) {
+    while (values.size() < size)
+        values.append(QString());
+    while (values.size() > size)
+        values.removeLast();
+}
 
 QComboBox *owningComboBox(QAbstractItemView *view) {
     if (!view)
@@ -262,7 +273,11 @@ public:
 
     QString displayText(const QVariant &value, const QLocale &locale) const override {
         if (g_enabled && (!layersPanel_ || g_translateLayersPanel) &&
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             value.metaType().id() == QMetaType::QString) {
+#else
+            value.userType() == QMetaType::QString) {
+#endif
             const QString result = translated(value.toString());
             if (!result.isNull())
                 return result;
@@ -526,9 +541,8 @@ void translateWidget(QWidget *widget) {
             return;
         combo->setProperty(kTranslatingComboProperty, true);
         QStringList sources = combo->property(kComboSourcesProperty).toStringList();
-        sources.resize(combo->count());
+        resizeStringList(sources, combo->count());
         const bool layerBlendMode = isLayerBlendModeCombo(combo);
-        int widestText = 0;
         for (int i = 0; i < combo->count(); ++i) {
             const QString source = comboSourceAt(combo, i);
             const QString result = layerBlendMode
@@ -538,26 +552,16 @@ void translateWidget(QWidget *widget) {
                 sources[i] = source;
                 combo->setItemText(i, result);
             }
-            widestText = qMax(
-                widestText,
-                combo->fontMetrics().horizontalAdvance(combo->itemText(i)));
         }
         combo->setProperty(kComboSourcesProperty, sources);
         if (isLayerChannelSelector(combo))
             lockLayerChannelPopupWidth(combo);
-        if (layerBlendMode) {
-            // Painter gives this selector a narrow default width and elides
-            // values such as "Disable" to "Disa...". Reserve enough room for
-            // the complete contextual translation plus the arrow and margins.
-            combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-            combo->setMinimumWidth(qMax(combo->minimumWidth(), widestText + 42));
-        }
         combo->setProperty(kTranslatingComboProperty, false);
         return;
     }
     if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
         QStringList sources = tabs->property(kTabSourcesProperty).toStringList();
-        sources.resize(tabs->count());
+        resizeStringList(sources, tabs->count());
         for (int i = 0; i < tabs->count(); ++i) {
             const QString displayed = tabs->tabText(i).trimmed();
             QString source = displayed;
@@ -1143,7 +1147,11 @@ protected:
             auto *menu = qobject_cast<QMenu *>(object);
             if (menu && mouse->button() == Qt::RightButton &&
                 (mouse->modifiers() & Qt::ControlModifier)) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                 const QString source = contextSourceAt(menu, mouse->position().toPoint());
+#else
+                const QString source = contextSourceAt(menu, mouse->pos());
+#endif
                 if (!source.isEmpty()) {
                     const QString controlType = controlTypeAt(menu);
                     QPointer<QWidget> safeWindow(menu->window());

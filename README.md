@@ -2,7 +2,7 @@
 
 这是一个适用于 Windows 版 Adobe Substance 3D Painter 的中文界面补全插件。插件会读取自带及用户添加的中文词库，对 Painter 官方汉化尚未覆盖的菜单、按钮、参数、资源目录和资产名称进行补充翻译。
 
-插件不会覆盖 Painter 已经显示为中文的内容。界面翻译和资源列表显示由原生 C++ 模块处理，以降低刷新延迟并提高退出稳定性。
+插件不会覆盖 Painter 已经显示为中文的内容。Painter 7.2 至最新版的界面翻译和资源列表显示均由原生 C++ 模块处理；插件会根据 Painter 的 Qt 主版本自动选择 Qt5 或 Qt6 DLL。
 
 ## 主要功能
 
@@ -22,10 +22,14 @@
 ## 适用环境
 
 - Windows 10/11 64 位
-- Adobe Substance 3D Painter 11.x
-- Painter 自带的 Python 3.11 / PySide6 环境
+- Adobe Substance 3D Painter 7.2 至官方最新版
 
-当前原生模块按 Substance 3D Painter 11.x 使用的 Qt 6 环境编译。其他大版本若升级了 Python 或 Qt，可能需要重新编译原生 DLL。
+兼容规则：
+
+- Painter 7.2–10.0（Python 3.7 / PySide2 / Qt5）使用专用 Qt5 C++ 翻译引擎。
+- Painter 10.1 及以后（Python 3.11 / PySide6 / Qt6）使用 Qt6 C++ 翻译引擎。
+- 插件会在启动时自动识别 Qt 主版本，不需要手动选择。
+- Qt5 与 Qt6 的二进制接口不兼容，因此旧版不会尝试加载 Qt6 DLL。
 
 ## 安装方法
 
@@ -108,6 +112,7 @@
 PNG、EXR、SVG、字体、QML、JavaScript 等普通资源不会解析内部代码；启用“提取普通文件名”时会记录它们的文件名。提取器不解析 ABR 文件内部的笔刷名称。
 
 提取资源容器时使用插件内置 Python 模块，不需要安装或调用外部 7-Zip 程序。
+Painter 7.2–10.0 的 Python 3.7 环境会按当前可用模块自动识别容器；即使某个二进制解析器不兼容，普通文件、XML、GLSL 和 ZIP 扫描仍会继续，不会使整个提取任务失败。
 
 ### 导出资产库未翻译名称
 
@@ -162,7 +167,8 @@ translations\official_assets_zh.json
 sp_chinese_translation/
 ├─ __init__.py                         Python 插件入口和词条提取器
 ├─ packages/
-│  ├─ sp_translation_delegate.dll      C++ 界面与资源列表翻译模块
+│  ├─ sp_translation_delegate_qt6.dll  Painter 10.1+ 的 Qt6 C++ 模块
+│  ├─ sp_translation_delegate_qt5.dll  Painter 7.2–10.0 的 Qt5 C++ 模块
 │  └─ ...                              资源容器解析所需的精简 Python 依赖
 ├─ translations/
 │  ├─ official_assets_zh.json          默认中文词库

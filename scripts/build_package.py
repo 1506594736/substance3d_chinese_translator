@@ -10,19 +10,20 @@ Layout:
 One-click build (run from the repository root):
     python scripts/build_package.py
 
-The command always configures and compiles ``sp_translation_delegate.dll``
-before creating the ZIP. A compile failure stops packaging, so an old DLL can
-never be published accidentally.
+The command always compiles both ``sp_translation_delegate_qt6.dll`` and
+``sp_translation_delegate_qt5.dll`` before creating the ZIP. A compile failure
+stops packaging, so an old DLL can never be published accidentally.
 
 Requirements and notes:
     * Windows x64 with CMake and MSVC Build Tools / Visual Studio C++ tools.
-    * Keep ``source/c++/qt-sdk`` headers and the three Qt6*.lib import libraries.
+    * Keep both compact Qt5.12.5 and Qt6 SDKs under ``source/c++/qt-sdk``.
     * Substance Painter must be closed only when installing/replacing the DLL;
       it does not need to be closed merely to build this archive.
     * The ZIP root is the plug-in content. Extract it directly into a folder
       named ``sp_chinese_translation`` under Painter's python/plugins folder.
 """
 
+import ast
 import json
 import shutil
 import subprocess
@@ -38,9 +39,12 @@ OUT = DIST / "sp_chinese_translation.zip"
 README = ROOT / "README.md"
 CXX_SRC = ROOT / "source" / "c++"
 CXX_BUILD = CXX_SRC / "build"
-DELEGATE_DLL = CXX_BUILD / "Release" / "sp_translation_delegate.dll"
-PACKAGED_DELEGATE_DLL = SRC / "packages" / "sp_translation_delegate.dll"
+DELEGATE_DLL = CXX_BUILD / "Release" / "sp_translation_delegate_qt6.dll"
+DELEGATE_QT5_DLL = CXX_BUILD / "Release" / "sp_translation_delegate_qt5.dll"
+PACKAGED_DELEGATE_DLL = SRC / "packages" / "sp_translation_delegate_qt6.dll"
+PACKAGED_DELEGATE_QT5_DLL = SRC / "packages" / "sp_translation_delegate_qt5.dll"
 LEGACY_NATIVE_DLL = SRC / "packages" / "sp_native_asset_delegate.dll"
+UNSUFFIXED_DELEGATE_DLL = SRC / "packages" / "sp_translation_delegate.dll"
 
 def _check_required_files() -> None:
     required = [
@@ -52,6 +56,9 @@ def _check_required_files() -> None:
         CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Core.lib",
         CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Gui.lib",
         CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Widgets.lib",
+        CXX_SRC / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Core.lib",
+        CXX_SRC / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Gui.lib",
+        CXX_SRC / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Widgets.lib",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -64,7 +71,11 @@ def _check_required_files() -> None:
 def _validate_sources() -> None:
     """Fail before compilation when the canonical source is malformed."""
     plugin_source = SRC / "__init__.py"
-    compile(plugin_source.read_text(encoding="utf-8"), str(plugin_source), "exec")
+    plugin_text = plugin_source.read_text(encoding="utf-8")
+    compile(plugin_text, str(plugin_source), "exec")
+    # Painter 7.2 ships Python 3.7. Reject newer syntax at package time even
+    # when this script itself is run by the current Python 3.11 toolchain.
+    ast.parse(plugin_text, filename=str(plugin_source), feature_version=(3, 7))
 
     dictionary_path = SRC / "translations" / "official_assets_zh.json"
     payload = json.loads(dictionary_path.read_text(encoding="utf-8-sig"))
@@ -98,13 +109,18 @@ def _build_delegate() -> None:
         [cmake, "--build", str(CXX_BUILD), "--config", "Release"],
         check=True,
     )
-    if not DELEGATE_DLL.is_file():
-        raise RuntimeError(f"编译完成但没有生成 DLL：{DELEGATE_DLL}")
+    missing_outputs = [path for path in (DELEGATE_DLL, DELEGATE_QT5_DLL)
+                       if not path.is_file()]
+    if missing_outputs:
+        raise RuntimeError(f"编译完成但缺少 DLL：{missing_outputs}")
 
     PACKAGED_DELEGATE_DLL.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(DELEGATE_DLL, PACKAGED_DELEGATE_DLL)
+    shutil.copy2(DELEGATE_QT5_DLL, PACKAGED_DELEGATE_QT5_DLL)
     LEGACY_NATIVE_DLL.unlink(missing_ok=True)
+    UNSUFFIXED_DELEGATE_DLL.unlink(missing_ok=True)
     print("已更新 C++ 翻译模块:", PACKAGED_DELEGATE_DLL)
+    print("已更新 Qt5 C++ 翻译模块:", PACKAGED_DELEGATE_QT5_DLL)
 
 
 def main() -> None:
@@ -135,7 +151,9 @@ def main() -> None:
 
     with zipfile.ZipFile(OUT, "r") as archive:
         names = archive.namelist()
-        required = {"__init__.py", "packages/sp_translation_delegate.dll",
+        required = {"__init__.py",
+                    "packages/sp_translation_delegate_qt5.dll",
+                    "packages/sp_translation_delegate_qt6.dll",
                     "translations/official_assets_zh.json", "README.md"}
         missing = required.difference(names)
         if missing:

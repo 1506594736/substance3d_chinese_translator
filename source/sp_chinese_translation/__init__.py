@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Substance Painter 全控件通用 + 资源库汉化插件 (资源分类树 + 资产全覆盖版)
-支持：Substance 3D Painter 11.x (PySide6 / Qt6)
+支持：Adobe Substance 3D Painter 7.2 至官方最新版。
+新版使用 PySide6 / Qt6 C++ 显示引擎，旧版自动使用
+PySide2 / Qt5 C++ 显示引擎。
 """
 
 import ctypes
@@ -16,8 +18,20 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 import substance_painter as sp
-from PySide6 import QtCore, QtGui, QtWidgets
-from shiboken6 import delete, getCppPointer, isValid
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from shiboken6 import delete, getCppPointer, isValid
+    QT_MAJOR = 6
+except ImportError:
+    from PySide2 import QtCore, QtGui, QtWidgets
+    from shiboken2 import delete, getCppPointer, isValid
+    QT_MAJOR = 5
+
+WA_DELETE_ON_CLOSE = (QtCore.Qt.WA_DeleteOnClose if QT_MAJOR == 5
+                      else QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+WAIT_CURSOR = (QtCore.Qt.WaitCursor if QT_MAJOR == 5
+               else QtCore.Qt.CursorShape.WaitCursor)
+QAction = QtWidgets.QAction if QT_MAJOR == 5 else QtGui.QAction
 
 IS_APP_QUITTING = False
 IS_CLEANING = False
@@ -26,10 +40,32 @@ TRANSLATE_LAYERS_PANEL = True
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
 PACKAGES_DIR = os.path.join(PLUGIN_DIR, "packages")
-DELEGATE_DLL_PATH = os.path.join(PACKAGES_DIR, "sp_translation_delegate.dll")
+DELEGATE_DLL_PATH = os.path.join(
+    PACKAGES_DIR,
+    "sp_translation_delegate_qt5.dll" if QT_MAJOR == 5
+    else "sp_translation_delegate_qt6.dll",
+)
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
 MAX_ARCHIVE_MEMBERS = 50_000
 MAX_NESTED_ARCHIVES = 128
+
+def _read_bool_setting(key, default):
+    """Read a boolean without PySide2's unreliable ``type=bool`` overload."""
+    try:
+        value = QtCore.QSettings().value(key, default)
+    except (Exception, SystemError):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", ""}:
+            return False
+    return bool(default)
 
 
 # ==========================================
@@ -43,31 +79,6 @@ def is_safe(obj):
         return isValid(obj)
     except Exception:
         return False
-
-
-def is_inside_layers_panel(w):
-    """检查控件及其父层级是否属于图层 (Layers) 面板内部"""
-    if not is_safe(w):
-        return False
-
-    curr = w
-    while curr is not None and is_safe(curr):
-        if isinstance(curr, QtWidgets.QDockWidget):
-            title = curr.windowTitle().strip()
-            if title in ("Layers", "图层"):
-                return True
-
-        try:
-            meta = curr.metaObject()
-            c_name = meta.className() if meta else ""
-            obj_name = curr.objectName() or ""
-            if "LayerStack" in c_name or "LayerTree" in c_name or "DockLayers" in obj_name:
-                return True
-        except Exception:
-            pass
-
-        curr = curr.parent()
-    return False
 
 
 # ==========================================
@@ -189,21 +200,6 @@ def _sync_native_dictionary():
         return False
 
 
-def _install_native_delegate(view):
-    dll = _load_native_delegate()
-    if dll is None or not is_safe(view):
-        return False
-    try:
-        pointer = getCppPointer(view)[0]
-        if not pointer:
-            return False
-        result = dll.sp_delegate_install(ctypes.c_void_p(pointer))
-        return result in (1, 2)
-    except Exception as exc:
-        print(">>> C++ 资源翻译 delegate 安装失败:", exc)
-        return False
-
-
 def _install_native_ui(app):
     dll = _load_native_delegate()
     if dll is None or not is_safe(app):
@@ -219,460 +215,7 @@ def _install_native_ui(app):
 
 
 # ==========================================
-# 3. 资源库 纯文本渲染委托
-# ==========================================
-class AssetTranslateDelegate(QtWidgets.QStyledItemDelegate):
-
-    def displayText(self, value, locale):
-        if not IS_TRANSLATION_ENABLED or IS_APP_QUITTING:
-            return super().displayText(value, locale)
-        try:
-            if isinstance(value, str):
-                raw = value.strip()
-                if raw in TRANSLATE_DICT:
-                    return TRANSLATE_DICT[raw]
-        except Exception:
-            pass
-        return super().displayText(value, locale)
-
-
-# ==========================================
-# 4. 单体控件安全汉化处理
-# ==========================================
-def translate_widget(w):
-    if IS_APP_QUITTING or not is_safe(w):
-        return
-
-    # 剔除图层面板内部的普通控件
-    if is_inside_layers_panel(w):
-        return
-
-    try:
-        # 标签类 (QLabel 等)
-        if hasattr(w, "text") and hasattr(w, "setText") and not isinstance(w, (QtWidgets.QLineEdit, QtWidgets.QComboBox)):
-            raw_text = w.text()
-            clean_text = raw_text.replace("&", "").strip()
-
-            if clean_text in TRANSLATE_DICT:
-                target_text = TRANSLATE_DICT[clean_text]
-                if raw_text == target_text:
-                    return
-
-                if w.property("_cn_orig_text") is None:
-                    w.setProperty("_cn_orig_text", raw_text)
-                w.setText(target_text)
-
-        # 按钮类
-        elif isinstance(w, QtWidgets.QAbstractButton):
-            raw_text = w.text()
-            clean_text = raw_text.replace("&", "").strip()
-
-            if clean_text in TRANSLATE_DICT:
-                target_text = TRANSLATE_DICT[clean_text]
-                if raw_text == target_text:
-                    return
-
-                if w.property("_cn_orig_text") is None:
-                    w.setProperty("_cn_orig_text", raw_text)
-                w.setText(target_text)
-
-        # 下拉组合框 (QComboBox)
-        elif isinstance(w, QtWidgets.QComboBox):
-            for idx in range(w.count()):
-                raw_item = w.itemText(idx)
-                clean_item = raw_item.strip()
-                if clean_item in TRANSLATE_DICT:
-                    target_item = TRANSLATE_DICT[clean_item]
-                    if raw_item != target_item:
-                        w.setItemText(idx, target_item)
-
-        # 折叠框 Title
-        elif isinstance(w, QtWidgets.QGroupBox):
-            raw_title = w.title()
-            clean_title = raw_title.strip()
-
-            if clean_title in TRANSLATE_DICT:
-                target_title = TRANSLATE_DICT[clean_title]
-                if raw_title == target_title:
-                    return
-
-                if w.property("_cn_orig_title") is None:
-                    w.setProperty("_cn_orig_title", raw_title)
-                w.setTitle(target_title)
-
-        # Tab 页标签
-        elif isinstance(w, QtWidgets.QTabBar):
-            for idx in range(w.count()):
-                raw_tab = w.tabText(idx)
-                clean_tab = raw_tab.strip()
-
-                if clean_tab in TRANSLATE_DICT:
-                    target_tab = TRANSLATE_DICT[clean_tab]
-                    if raw_tab == target_tab:
-                        continue
-
-                    if w.property(f"_cn_orig_tab_{idx}") is None:
-                        w.setProperty(f"_cn_orig_tab_{idx}", raw_tab)
-                    w.setTabText(idx, target_tab)
-
-        # Dock 悬浮框标题
-        elif isinstance(w, QtWidgets.QDockWidget):
-            raw_title = w.windowTitle()
-            clean_title = raw_title.strip()
-
-            if clean_title in TRANSLATE_DICT:
-                target_title = TRANSLATE_DICT[clean_title]
-                if raw_title == target_title:
-                    return
-
-                if w.property("_cn_orig_win_title") is None:
-                    w.setProperty("_cn_orig_win_title", raw_title)
-                w.setWindowTitle(target_title)
-
-        # 输入框 Placeholder
-        elif hasattr(w, "placeholderText") and hasattr(w, "setPlaceholderText"):
-            raw_ph = w.placeholderText()
-            clean_ph = raw_ph.strip()
-
-            if clean_ph in TRANSLATE_DICT:
-                target_ph = TRANSLATE_DICT[clean_ph]
-                if raw_ph == target_ph:
-                    return
-
-                if w.property("_cn_orig_ph") is None:
-                    w.setProperty("_cn_orig_ph", raw_ph)
-                w.setPlaceholderText(target_ph)
-
-    except Exception:
-        pass
-
-
-# ==========================================
-# 5. 全局 UI 事件拦截引擎
-# ==========================================
-class SPUniversalInterceptor(QtCore.QObject):
-
-    def eventFilter(self, obj, event):
-        event_type = event.type()
-
-        # Main-window Close arrives before Painter unloads Python plugins and
-        # before child views begin native destruction. Detach Python delegates
-        # here; doing the same work later in close_plugin() is already too late.
-        if event_type == QtCore.QEvent.Type.Close and is_safe(obj):
-            try:
-                if obj.metaObject().className() == "Alg::S4MainWindow":
-                    _prepare_for_window_close()
-            except Exception:
-                pass
-            return False
-
-        if event_type in (QtCore.QEvent.Type.Show, QtCore.QEvent.Type.Polish):
-            if IS_APP_QUITTING or QtWidgets.QApplication.closingDown():
-                return False
-
-            if not is_safe(obj):
-                return False
-
-            try:
-                if isinstance(obj, QtWidgets.QMenu) and event_type == QtCore.QEvent.Type.Show:
-                    for act in obj.actions():
-                        if is_safe(act):
-                            raw_text = act.text()
-                            clean_text = raw_text.replace("&", "").strip()
-                            if clean_text in TRANSLATE_DICT:
-                                target_text = TRANSLATE_DICT[clean_text]
-                                if raw_text != target_text:
-                                    if act.property("_cn_orig_text") is None:
-                                        act.setProperty("_cn_orig_text", raw_text)
-                                    act.setText(target_text)
-                    return False
-
-                translate_widget(obj)
-
-            except Exception:
-                pass
-
-        return False
-
-
-# ==========================================
-# 6. 静默全界面扫描与还原
-# ==========================================
-def force_refresh_ui():
-    if IS_APP_QUITTING or QtWidgets.QApplication.closingDown():
-        return
-
-    app = QtWidgets.QApplication.instance()
-    if not is_safe(app):
-        return
-
-    try:
-        for w in app.allWidgets():
-            if IS_APP_QUITTING:
-                break
-            if is_safe(w) and w.isVisible():
-                translate_widget(w)
-    except Exception:
-        pass
-
-
-def restore_ui_translations():
-    app = QtWidgets.QApplication.instance()
-    if not is_safe(app):
-        return
-
-    try:
-        for w in app.allWidgets():
-            if not is_safe(w):
-                continue
-
-            orig_text = w.property("_cn_orig_text")
-            if orig_text is not None:
-                try:
-                    w.setText(orig_text)
-                except Exception:
-                    pass
-                w.setProperty("_cn_orig_text", None)
-
-            orig_title = w.property("_cn_orig_title")
-            if orig_title is not None:
-                try:
-                    w.setTitle(orig_title)
-                except Exception:
-                    pass
-                w.setProperty("_cn_orig_title", None)
-
-            orig_win_title = w.property("_cn_orig_win_title")
-            if orig_win_title is not None:
-                try:
-                    w.setWindowTitle(orig_win_title)
-                except Exception:
-                    pass
-                w.setProperty("_cn_orig_win_title", None)
-
-            orig_ph = w.property("_cn_orig_ph")
-            if orig_ph is not None:
-                try:
-                    w.setPlaceholderText(orig_ph)
-                except Exception:
-                    pass
-                w.setProperty("_cn_orig_ph", None)
-
-            if isinstance(w, QtWidgets.QTabBar):
-                try:
-                    for idx in range(w.count()):
-                        orig_tab = w.property(f"_cn_orig_tab_{idx}")
-                        if orig_tab is not None:
-                            w.setTabText(idx, orig_tab)
-                            w.setProperty(f"_cn_orig_tab_{idx}", None)
-                except Exception:
-                    pass
-
-            if isinstance(w, QtWidgets.QMenu):
-                try:
-                    for act in w.actions():
-                        if is_safe(act):
-                            orig_act = act.property("_cn_orig_text")
-                            if orig_act is not None:
-                                act.setText(orig_act)
-                                act.setProperty("_cn_orig_text", None)
-                except Exception:
-                    pass
-
-    except Exception:
-        pass
-
-
-# ==========================================
-# 7. 资源库全 View 控件 Delegate 通用挂载
-# ==========================================
-def _apply_asset_delegates():
-    if IS_APP_QUITTING or QtWidgets.QApplication.closingDown():
-        return
-
-    app = QtWidgets.QApplication.instance()
-    if not is_safe(app):
-        return
-
-    try:
-        for w in app.allWidgets():
-            if IS_APP_QUITTING:
-                break
-            if is_safe(w):
-                # 排除图层面板，保护图层名称
-                if is_inside_layers_panel(w):
-                    continue
-
-                if isinstance(w, QtWidgets.QAbstractItemView):
-                    try:
-                        meta_name = w.metaObject().className()
-                    except Exception:
-                        meta_name = ""
-
-                    # Runtime diagnostics identify the right-hand asset list as
-                    # Alg::ResourceListView / objectName "resources". Its model
-                    # exposes core index methods as private through PySide, so
-                    # install directly without probing the model.
-                    if meta_name == "Alg::ResourceListView" and w.objectName() == "resources":
-                        if not w.property("_cn_translation_delegate_installed"):
-                            if _install_native_delegate(w):
-                                w.setProperty("_cn_translation_delegate_installed", True)
-                                print(">>> 已安装原生资源列表翻译 delegate: Alg::ResourceListView")
-                        continue
-
-                    # Painter's resource path tree sometimes reports a
-                    # successful setData() and immediately restores its source
-                    # text on the next model refresh. Identify that tree by its
-                    # stable root folder names and always paint it through the
-                    # native dictionary delegate.
-                    if (isinstance(w, QtWidgets.QTreeView)
-                            and _is_resource_folder_tree(w)):
-                        if not w.property("_cn_translation_delegate_installed"):
-                            if _install_native_delegate(w):
-                                w.setProperty("_cn_translation_delegate_installed", True)
-                                print(">>> 已安装原生资源目录树翻译 delegate")
-                        continue
-
-                    needs_delegate = _translate_view_model(w)
-                    # Read-only resource folder models reject setData(). Use
-                    # the crash-safe native delegate for trees that actually
-                    # contain dictionary matches, while leaving unrelated
-                    # Painter views and their custom delegates untouched.
-                    if (needs_delegate and isinstance(w, QtWidgets.QTreeView)
-                            and not w.property("_cn_translation_delegate_installed")):
-                        if _install_native_delegate(w):
-                            w.setProperty("_cn_translation_delegate_installed", True)
-    except Exception:
-        pass
-
-
-def _is_resource_folder_tree(view):
-    """Recognize Painter's library path tree without relying on class names."""
-    # Verified in Painter 11.1.2: both the normal and filtered resource path
-    # trees live below path_filter_panel and use these stable object names.
-    # Structural detection avoids an expensive model walk and also works while
-    # the tree is collapsed or contains hundreds of nodes before starter_assets.
-    try:
-        if view.objectName() in {"tree_view", "filtered_tree_view"}:
-            current = view.parent()
-            saw_path_panel = False
-            saw_resources_view = False
-            for _ in range(10):
-                if current is None:
-                    break
-                if current.objectName() == "path_filter_panel":
-                    saw_path_panel = True
-                if current.metaObject().className() == "Alg::NewResourcesView":
-                    saw_resources_view = True
-                current = current.parent()
-            if saw_path_panel and saw_resources_view:
-                return True
-    except Exception:
-        pass
-
-    # Fallback for future Painter versions whose object names may change.
-    anchors = {
-        "alphas", "colorluts", "effects", "emitters", "environments",
-        "fonts", "generators", "materials", "presets", "procedurals",
-        "receivers", "shaders", "smart-masks", "smart-materials", "textures",
-    }
-    try:
-        model = view.model()
-        if not is_safe(model):
-            return False
-        pending = [QtCore.QModelIndex()]
-        found = set()
-        visited = 0
-        while pending and visited < 120 and len(found) < 3:
-            parent = pending.pop()
-            rows = min(model.rowCount(parent), 50)
-            for row in range(rows):
-                index = model.index(row, 0, parent)
-                if not index.isValid():
-                    continue
-                visited += 1
-                value = model.data(index, QtCore.Qt.ItemDataRole.DisplayRole)
-                if isinstance(value, str):
-                    normalized = value.strip().casefold()
-                    if normalized in anchors:
-                        found.add(normalized)
-                if model.hasChildren(index):
-                    pending.append(index)
-                if len(found) >= 3 or visited >= 120:
-                    break
-        return len(found) >= 3
-    except Exception:
-        return False
-
-
-def _prepare_for_window_close():
-    """Detach Python delegates before Painter starts destroying child widgets."""
-    global IS_APP_QUITTING
-    IS_APP_QUITTING = True
-    try:
-        if is_safe(_sp_live_timer):
-            _sp_live_timer.stop()
-    except Exception:
-        pass
-
-    for view, original_delegate in list(_sp_original_delegates.items()):
-        try:
-            if is_safe(view) and is_safe(original_delegate):
-                view.setItemDelegate(original_delegate)
-        except Exception:
-            pass
-
-
-def _translate_view_model(view):
-    """Translate model display data without installing a Python delegate."""
-    try:
-        model = view.model()
-        if not is_safe(model):
-            return False
-
-        needs_delegate = False
-        pending = [QtCore.QModelIndex()]
-        visited = 0
-        while pending and visited < 160:
-            parent = pending.pop()
-            rows = min(model.rowCount(parent), 80)
-            # Alg::NewResourceListModel exposes columnCount() as a private
-            # method through PySide. ResourceListView is a one-column QListView,
-            # so avoid calling the inaccessible virtual method.
-            if isinstance(view, QtWidgets.QListView):
-                columns = 1
-            else:
-                try:
-                    columns = min(model.columnCount(parent), 3)
-                except (TypeError, RuntimeError):
-                    columns = 1
-            for row in range(rows):
-                for column in range(columns):
-                    index = model.index(row, column, parent)
-                    if not index.isValid():
-                        continue
-                    visited += 1
-                    value = model.data(index, QtCore.Qt.ItemDataRole.DisplayRole)
-                    if isinstance(value, str):
-                        source = value.strip()
-                        target = TRANSLATE_DICT.get(source)
-                        if target and target != value:
-                            changed = model.setData(index, target, QtCore.Qt.ItemDataRole.DisplayRole)
-                            if not changed:
-                                needs_delegate = True
-                    if column == 0 and model.hasChildren(index):
-                        pending.append(index)
-                    if visited >= 160:
-                        break
-                if visited >= 160:
-                    break
-        return needs_delegate
-    except Exception:
-        return False
-
-
-# ==========================================
-# 8. Translation label extractor UI
+# 3. Translation label extractor UI
 # ==========================================
 def _load_archive_modules():
     packages_dir = os.path.join(PLUGIN_DIR, "packages")
@@ -681,9 +224,22 @@ def _load_archive_modules():
     pure_python_zip = os.path.join(packages_dir, "python.zip")
     if os.path.isfile(pure_python_zip) and pure_python_zip not in sys.path:
         sys.path.insert(0, pure_python_zip)
-    import py7zr
-    import h5py
+    try:
+        import py7zr
+    except (ImportError, OSError):
+        py7zr = None
+    try:
+        import h5py
+    except (ImportError, OSError):
+        h5py = None
     return py7zr, h5py
+
+
+def _is_supported_container(path, py7zr, h5py):
+    """Probe formats without requiring version-specific binary modules."""
+    return ((py7zr is not None and py7zr.is_7zfile(path))
+            or zipfile.is_zipfile(path)
+            or (h5py is not None and h5py.is_hdf5(path)))
 
 
 def _safe_archive_names(names):
@@ -766,10 +322,10 @@ def _parse_glsl_metadata(path, attributes):
                         items.add(clean)
                 elif key == "values" and "values" in selected and isinstance(child, dict):
                     # Combobox captions are the keys; their values are shader constants.
-                    items.update(
-                        clean for caption in child
-                        if (clean := str(caption).strip()) and not _contains_han(clean)
-                    )
+                    for caption in child:
+                        clean = str(caption).strip()
+                        if clean and not _contains_han(clean):
+                            items.add(clean)
                 else:
                     collect(child)
         elif isinstance(value, list):
@@ -817,7 +373,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.setWindowTitle("中文翻译工具")
         self.setObjectName("sp_chinese_translation_tool")
         self.setMinimumSize(720, 570)
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setAttribute(WA_DELETE_ON_CLOSE, False)
         self._files = []
         self._index = 0
         self._items = set()
@@ -995,7 +551,23 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         failures = []
         seen = set()
 
+        def resource_name(resource, identifier):
+            """Read the display name across Painter's old and new APIs."""
+            gui_name = getattr(resource, "gui_name", None)
+            if callable(gui_name):
+                value = gui_name()
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            # Painter 7.x Resource only exposes ResourceID.name. In that API
+            # Shelf.resources() is already flat, so this is the asset caption
+            # used by the Assets window.
+            value = getattr(identifier, "name", "")
+            if callable(value):
+                value = value()
+            return value.strip() if isinstance(value, str) else ""
+
         def visit(resource):
+            identifier = None
             try:
                 identifier = resource.identifier()
                 identity = identifier.url() if hasattr(identifier, "url") else repr(identifier)
@@ -1005,19 +577,21 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 return
             seen.add(identity)
             try:
-                name = resource.gui_name().strip()
+                name = resource_name(resource, identifier)
                 translated_name = TRANSLATE_DICT.get(name, "").strip()
                 if name and not _contains_han(name) and not translated_name:
                     names.add(name)
             except Exception as exc:
                 failures.append(str(exc))
-            try:
-                for child in resource.children():
-                    visit(child)
-            except Exception:
-                pass
+            children = getattr(resource, "children", None)
+            if callable(children):
+                try:
+                    for child in children():
+                        visit(child)
+                except Exception as exc:
+                    failures.append(str(exc))
 
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
         try:
             shelves = list(sp.resource.Shelves.all())
             for shelf_index, shelf in enumerate(shelves, 1):
@@ -1179,7 +753,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
 
     def _extract_archive(self, asset_path, destination):
         py7zr, h5py = _load_archive_modules()
-        if py7zr.is_7zfile(asset_path):
+        if py7zr is not None and py7zr.is_7zfile(asset_path):
             with py7zr.SevenZipFile(asset_path, mode="r") as archive:
                 entries = archive.list()
                 _safe_archive_names(entry.filename for entry in entries)
@@ -1196,7 +770,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                     raise ValueError("容器包含不允许的符号链接")
                 archive.extractall(path=destination)
             return "zip"
-        if h5py.is_hdf5(asset_path):
+        if h5py is not None and h5py.is_hdf5(asset_path):
             with h5py.File(asset_path, mode="r") as archive:
                 dataset_names = []
                 archive.visititems(
@@ -1231,8 +805,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 raise ValueError("嵌套容器超过 128 个安全上限")
             try:
                 py7zr, h5py = _load_archive_modules()
-                is_container = (py7zr.is_7zfile(path) or zipfile.is_zipfile(path)
-                                or h5py.is_hdf5(path))
+                is_container = _is_supported_container(path, py7zr, h5py)
                 if not is_container:
                     continue
                 serial += 1
@@ -1260,13 +833,18 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.status_label.setText(f"[{self._index + 1}/{len(self._files)}] {relative}")
         try:
             py7zr, h5py = _load_archive_modules()
-            is_container = (py7zr.is_7zfile(asset_path) or zipfile.is_zipfile(asset_path)
-                            or h5py.is_hdf5(asset_path))
+            is_container = _is_supported_container(asset_path, py7zr, h5py)
             # Container names are always visible asset names and are therefore
             # mandatory. The option only controls ordinary file names.
+            suffix = pathlib.Path(asset_path).suffix.lower()
+            known_container_name = suffix in {
+                ".sbsar", ".spsm", ".spp", ".sbsprs", ".sbsasm",
+                ".zip", ".7z",
+            }
             file_name = pathlib.Path(asset_path).stem.strip()
             if (file_name and not _contains_han(file_name)
-                    and (is_container or self._include_file_names)):
+                    and (is_container or known_container_name
+                         or self._include_file_names)):
                 self._items.add(file_name)
             if is_container:
                 with tempfile.TemporaryDirectory(prefix="sp_label_extract_") as temporary:
@@ -1278,7 +856,6 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                         self._items.update(_parse_asset_xml(xml_path, self._attributes))
                 detail = f"{archive_type}, 嵌套包 {nested_count}, XML {xml_count}"
             else:
-                suffix = pathlib.Path(asset_path).suffix.lower()
                 glsl_extensions = {
                     ".glsl", ".glslfx", ".vert", ".frag", ".geom",
                     ".tesc", ".tese", ".comp",
@@ -1408,11 +985,7 @@ def show_translation_tool():
 # ==========================================
 # 9. 生命周期的启动与清理
 # ==========================================
-_sp_original_delegates = {}
-
-
 def close_plugin():
-    global _sp_original_delegates
     global IS_APP_QUITTING, IS_CLEANING, IS_TRANSLATION_ENABLED
     global _label_extractor_dialog, _label_extractor_action, _label_extractor_menu_bar
 
@@ -1449,15 +1022,6 @@ def close_plugin():
         except Exception:
             pass
 
-    # Asset delegates intentionally remain installed and strongly referenced.
-    # Painter can continue painting views after close_plugin() returns; releasing
-    # them here causes the python311.dll use-after-free seen in the minidump.
-    # Do not traverse or mutate Painter widgets during close_plugin(). Painter
-    # can call this while native widgets are already being destroyed even when
-    # QApplication.closingDown() still reports False.
-    _sp_original_delegates.clear()
-
-
 def _set_registered_plugin_display_name(main_window):
     """Rename this plugin's existing Painter Python-menu registration."""
     if not is_safe(main_window):
@@ -1493,8 +1057,8 @@ def start_plugin():
     IS_APP_QUITTING = False
     IS_CLEANING = False
     IS_TRANSLATION_ENABLED = True
-    TRANSLATE_LAYERS_PANEL = QtCore.QSettings().value(
-        "sp_chinese_translation/translate_layers_panel", True, type=bool
+    TRANSLATE_LAYERS_PANEL = _read_bool_setting(
+        "sp_chinese_translation/translate_layers_panel", True
     )
 
     phase_started = time.perf_counter()
@@ -1521,7 +1085,7 @@ def start_plugin():
     QtCore.QTimer.singleShot(
         0, lambda window=main_window: _set_registered_plugin_display_name(window)
     )
-    _label_extractor_action = QtGui.QAction("中文翻译工具", main_window)
+    _label_extractor_action = QAction("中文翻译工具", main_window)
     _label_extractor_action.setObjectName("sp_chinese_translation_tool_action")
     _label_extractor_action.triggered.connect(show_translation_tool)
     _label_extractor_menu_bar = main_window.menuBar()
@@ -1534,7 +1098,8 @@ def start_plugin():
         f"json={json_load_ms:.1f} ms, "
         f"native_sync={native_sync_ms:.1f} ms, "
         f"native_ui={native_ui_ms:.1f} ms, "
-        f"total={total_ms:.1f} ms"
+        f"total={total_ms:.1f} ms, "
+        f"runtime={'Qt6/C++' if QT_MAJOR >= 6 else 'Qt5/C++'}"
     )
 
     # Do not attach a module-level Python callback to aboutToQuit. Painter may

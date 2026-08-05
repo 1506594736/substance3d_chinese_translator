@@ -50,6 +50,7 @@
 namespace {
 QHash<QString, QString> g_translations;
 QHash<QString, QString> g_originals;
+QHash<QString, QHash<QString, QString>> g_controlTranslations;
 QHash<QString, QString> g_translationPaths;
 QString g_fallbackPath;
 QPointer<QWidget> g_originalTooltipOwner;
@@ -141,42 +142,8 @@ bool shouldExcludeLayersPanel(QWidget *widget) {
     return !g_translateLayersPanel && isInsideLayersPanel(widget);
 }
 
-const QHash<QString, QString> &layerBlendTranslations() {
-    static const QHash<QString, QString> values = {
-        {QStringLiteral("Normal"), QStringLiteral("正常")},
-        {QStringLiteral("Passthrough"), QStringLiteral("穿透")},
-        {QStringLiteral("Disable"), QStringLiteral("禁用")},
-        {QStringLiteral("Replace"), QStringLiteral("替换")},
-        {QStringLiteral("Multiply"), QStringLiteral("正片叠底")},
-        {QStringLiteral("Divide"), QStringLiteral("除法")},
-        {QStringLiteral("Inverse divide"), QStringLiteral("反向除法")},
-        {QStringLiteral("Darken (Min)"), QStringLiteral("变暗（最小值）")},
-        {QStringLiteral("Lighten (Max)"), QStringLiteral("变亮（最大值）")},
-        {QStringLiteral("Linear dodge (Add)"), QStringLiteral("线性减淡（添加）")},
-        {QStringLiteral("Subtract"), QStringLiteral("减去")},
-        {QStringLiteral("Inverse Subtract"), QStringLiteral("反向减去")},
-        {QStringLiteral("Difference"), QStringLiteral("差值")},
-        {QStringLiteral("Exclusion"), QStringLiteral("排除")},
-        {QStringLiteral("Signed addition (AddSub)"), QStringLiteral("有符号相加（加减）")},
-        {QStringLiteral("Overlay"), QStringLiteral("叠加")},
-        {QStringLiteral("Screen"), QStringLiteral("滤色")},
-        {QStringLiteral("Linear burn"), QStringLiteral("线性加深")},
-        {QStringLiteral("Color burn"), QStringLiteral("颜色加深")},
-        {QStringLiteral("Color dodge"), QStringLiteral("颜色减淡")},
-        {QStringLiteral("Soft light"), QStringLiteral("柔光")},
-        {QStringLiteral("Hard light"), QStringLiteral("强光")},
-        {QStringLiteral("Vivid light"), QStringLiteral("亮光")},
-        {QStringLiteral("Linear light"), QStringLiteral("线性光")},
-        {QStringLiteral("Pin light"), QStringLiteral("点光")},
-        {QStringLiteral("Tint"), QStringLiteral("色调")},
-        {QStringLiteral("Saturation"), QStringLiteral("饱和度")},
-        {QStringLiteral("Color"), QStringLiteral("颜色")},
-        {QStringLiteral("Value"), QStringLiteral("明度")},
-        {QStringLiteral("Normal map combine"), QStringLiteral("法线贴图合并")},
-        {QStringLiteral("Normal map detail"), QStringLiteral("法线贴图细节")},
-        {QStringLiteral("Normal map inverse detail"), QStringLiteral("法线贴图反向细节")},
-    };
-    return values;
+QString controlTranslation(const QString &controlType, const QString &source) {
+    return g_controlTranslations.value(controlType).value(source);
 }
 
 QString comboSourceAt(QComboBox *combo, int index) {
@@ -259,7 +226,7 @@ bool isLayerBlendModeMenu(QMenu *menu) {
 
 QString menuTranslation(QMenu *menu, const QString &source) {
     return isLayerBlendModeMenu(menu)
-        ? layerBlendTranslations().value(source)
+        ? controlTranslation(QStringLiteral("layer_blend_mode"), source)
         : g_translations.value(source);
 }
 
@@ -440,7 +407,7 @@ void translateMenu(QMenu *menu) {
         const QString source = layerBlendMode && !stored.isEmpty()
             ? stored : actionSource(action);
         const QString result = layerBlendMode
-            ? layerBlendTranslations().value(source)
+            ? controlTranslation(QStringLiteral("layer_blend_mode"), source)
             : translated(source, true);
         if (!result.isNull() && action->text() != result) {
             action->setProperty(kSourceProperty, source);
@@ -546,7 +513,7 @@ void translateWidget(QWidget *widget) {
         for (int i = 0; i < combo->count(); ++i) {
             const QString source = comboSourceAt(combo, i);
             const QString result = layerBlendMode
-                ? layerBlendTranslations().value(source)
+                ? controlTranslation(QStringLiteral("layer_blend_mode"), source)
                 : translated(source);
             if (!result.isNull() && combo->itemText(i) != result) {
                 sources[i] = source;
@@ -634,7 +601,10 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
                     combo->property(kComboSourcesProperty).toStringList();
                 if (row >= 0 && row < sources.size()) {
                     const QString source = sources.at(row);
-                    if (!source.isEmpty() && g_translations.value(source) == displayed)
+                    const QString expected = isLayerBlendModeCombo(combo)
+                        ? controlTranslation(QStringLiteral("layer_blend_mode"), source)
+                        : g_translations.value(source);
+                    if (!source.isEmpty() && expected == displayed)
                         return source;
                 }
                 const auto original = g_originals.constFind(displayed);
@@ -907,7 +877,8 @@ QString controlTypeAt(QWidget *widget) {
     return QStringLiteral("界面控件（%1）").arg(className);
 }
 
-bool saveTranslation(const QString &source, const QString &target, QString *error) {
+bool saveTranslation(const QString &source, const QString &target,
+                     const QString &controlType, QString *error) {
     const QString translationPath = g_translationPaths.value(source, g_fallbackPath);
     if (translationPath.isEmpty()) {
         if (error)
@@ -949,9 +920,22 @@ bool saveTranslation(const QString &source, const QString &target, QString *erro
             *error = QStringLiteral("原始翻译文件格式无效：%1").arg(translationPath);
         return false;
     }
-    QJsonObject translations = root.value(QStringLiteral("translations")).toObject();
-    translations.insert(source, target);
-    root.insert(QStringLiteral("translations"), translations);
+    if (controlType.isEmpty()) {
+        QJsonObject translations =
+            root.value(QStringLiteral("translations")).toObject();
+        translations.insert(source, target);
+        root.insert(QStringLiteral("translations"), translations);
+    } else {
+        QJsonObject controlTypes =
+            root.value(QStringLiteral("control_types")).toObject();
+        QJsonObject section = controlTypes.value(controlType).toObject();
+        QJsonObject translations =
+            section.value(QStringLiteral("translations")).toObject();
+        translations.insert(source, target);
+        section.insert(QStringLiteral("translations"), translations);
+        controlTypes.insert(controlType, section);
+        root.insert(QStringLiteral("control_types"), controlTypes);
+    }
 
     const QFileInfo info(translationPath);
     if (!QDir().mkpath(info.absolutePath())) {
@@ -1058,7 +1042,21 @@ void editTranslation(const QString &source, const QString &controlType,
                      QWidget *parent) {
     if (source.isEmpty())
         return;
-    const QString current = g_translations.value(source, source);
+    QString scopedControlType;
+    QString current = g_translations.value(source);
+    if (current.isNull()) {
+        for (auto it = g_controlTranslations.cbegin();
+             it != g_controlTranslations.cend(); ++it) {
+            const auto found = it.value().constFind(source);
+            if (found != it.value().cend()) {
+                scopedControlType = it.key();
+                current = found.value();
+                break;
+            }
+        }
+    }
+    if (current.isNull())
+        current = source;
 
     QWidget *dialogParent = QApplication::activeWindow();
     if (!dialogParent)
@@ -1115,14 +1113,17 @@ void editTranslation(const QString &source, const QString &controlType,
         return;
 
     QString error;
-    if (!saveTranslation(source, target, &error)) {
+    if (!saveTranslation(source, target, scopedControlType, &error)) {
         QMessageBox::critical(parent, QStringLiteral("保存翻译失败"), error);
         return;
     }
 
     // Keep historical reverse entries until restart so widgets currently
     // showing an older translation can still resolve back to the source.
-    g_translations.insert(source, target);
+    if (scopedControlType.isEmpty())
+        g_translations.insert(source, target);
+    else
+        g_controlTranslations[scopedControlType].insert(source, target);
     g_originals.insert(target, source);
     refreshTranslatedViews();
 }
@@ -1248,7 +1249,7 @@ bool pinThisDll() {
 }
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 7; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 8; }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
     const wchar_t *source, const wchar_t *path) {
@@ -1266,6 +1267,7 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_path(
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_clear_translations() {
     g_translations.clear();
     g_originals.clear();
+    g_controlTranslations.clear();
     g_translationPaths.clear();
 }
 
@@ -1289,6 +1291,14 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enable
     g_enabled = enabled != 0;
     if (g_enabled)
         scanVisibleWidgets();
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translation(
+    const wchar_t *controlType, const wchar_t *source, const wchar_t *target) {
+    if (controlType && source && target) {
+        g_controlTranslations[QString::fromWCharArray(controlType)].insert(
+            QString::fromWCharArray(source), QString::fromWCharArray(target));
+    }
 }
 
 extern "C" __declspec(dllexport) void __cdecl

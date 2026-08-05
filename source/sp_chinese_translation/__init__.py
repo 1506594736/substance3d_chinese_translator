@@ -86,17 +86,20 @@ def is_safe(obj):
 # ==========================================
 TRANSLATE_DICT = {}
 TRANSLATE_SOURCE_FILES = {}
+CONTROL_TRANSLATE_DICTS = {}
 
 
 def load_translation_packages():
     """Merge every UTF-8 ``*_zh.json`` package beside this plugin.
 
-    Every package must use schema ``sp-translation-v1`` and contain a
-    ``translations`` object. Files load alphabetically; a later package
-    intentionally overrides duplicate source strings.
+    A package can contain root-level ``translations`` and/or a
+    ``control_types`` object whose entries each own a ``translations`` object.
+    Files load alphabetically; a later package intentionally overrides
+    duplicate strings within the same scope.
     """
     TRANSLATE_DICT.clear()
     TRANSLATE_SOURCE_FILES.clear()
+    CONTROL_TRANSLATE_DICTS.clear()
     plugin_dir = TRANSLATIONS_DIR
     if not os.path.isdir(plugin_dir):
         print(f">>> 翻译包目录不存在: {plugin_dir}")
@@ -118,15 +121,39 @@ def load_translation_packages():
                 raise ValueError("unsupported or missing $schema")
             if payload.get("language") != "zh-CN":
                 raise ValueError("language must be zh-CN")
-            entries = payload.get("translations")
+            control_types = payload.get("control_types", {})
+            if not isinstance(control_types, dict):
+                raise ValueError("control_types must be a JSON object")
+            entries = payload.get("translations", {})
             if not isinstance(entries, dict):
                 raise ValueError("translations must be a JSON object")
+            if not entries and not control_types:
+                raise ValueError("package must contain translations or control_types")
             loaded = 0
             for source, target in entries.items():
                 if isinstance(source, str) and isinstance(target, str) and source and target:
                     TRANSLATE_DICT[source] = target
                     TRANSLATE_SOURCE_FILES[source] = path
                     loaded += 1
+            for control_type, section in control_types.items():
+                if not isinstance(control_type, str) or not control_type.strip():
+                    raise ValueError("control type names must be non-empty strings")
+                if not isinstance(section, dict):
+                    raise ValueError(f"control type {control_type!r} must be an object")
+                scoped_entries = section.get("translations")
+                if not isinstance(scoped_entries, dict):
+                    raise ValueError(
+                        f"control type {control_type!r} translations must be an object"
+                    )
+                destination = CONTROL_TRANSLATE_DICTS.setdefault(
+                    control_type.strip(), {}
+                )
+                for source, target in scoped_entries.items():
+                    if (isinstance(source, str) and isinstance(target, str)
+                            and source and target):
+                        destination[source] = target
+                        TRANSLATE_SOURCE_FILES[source] = path
+                        loaded += 1
             print(f">>> 已加载翻译包 {name}: {loaded} 条")
         except Exception as exc:
             print(f">>> 跳过无效翻译包 {name}: {exc}")
@@ -153,6 +180,10 @@ def _load_native_delegate():
         dll.sp_delegate_reserve_translations.restype = None
         dll.sp_delegate_add_translation.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
         dll.sp_delegate_add_translation.restype = None
+        dll.sp_delegate_add_control_translation.argtypes = [
+            ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p
+        ]
+        dll.sp_delegate_add_control_translation.restype = None
         dll.sp_delegate_set_translation_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
         dll.sp_delegate_set_translation_path.restype = None
         dll.sp_delegate_set_fallback_path.argtypes = [ctypes.c_wchar_p]
@@ -166,8 +197,8 @@ def _load_native_delegate():
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
         api_version = dll.sp_delegate_api_version()
-        if api_version != 7:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 7，实际 {api_version}")
+        if api_version != 8:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 8，实际 {api_version}")
             return None
         _native_delegate = dll
     except Exception as exc:
@@ -190,6 +221,14 @@ def _sync_native_dictionary():
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
                 dll.sp_delegate_add_translation(source, target)
+                source_path = TRANSLATE_SOURCE_FILES.get(source)
+                if source_path:
+                    dll.sp_delegate_set_translation_path(source, source_path)
+        for control_type, entries in CONTROL_TRANSLATE_DICTS.items():
+            for source, target in entries.items():
+                dll.sp_delegate_add_control_translation(
+                    control_type, source, target
+                )
                 source_path = TRANSLATE_SOURCE_FILES.get(source)
                 if source_path:
                     dll.sp_delegate_set_translation_path(source, source_path)

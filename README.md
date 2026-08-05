@@ -144,6 +144,32 @@ Painter 7.2–10.0 的 Python 3.7 环境会按当前可用模块自动识别容�
 }
 ```
 
+需要限定到特定控件类型的词条放在 `control_types` 中。一个文件可以包含多个控件类型，每个类型拥有独立词表：
+
+```json
+{
+  "$schema": "sp-translation-v1",
+  "id": "control-specific-translations",
+  "language": "zh-CN",
+  "control_types": {
+    "layer_blend_mode": {
+      "description": "Layer blend mode menu entries",
+      "translations": {
+        "Normal": "正常",
+        "Multiply": "正片叠底"
+      }
+    },
+    "another_control_type": {
+      "translations": {
+        "English source": "仅用于该控件的翻译"
+      }
+    }
+  }
+}
+```
+
+控件专属词条不会进入全局词典，因此相同英文在不同控件中可以使用不同译文。
+
 要求：
 
 - 文件名必须以 `_zh.json` 结尾。
@@ -172,6 +198,7 @@ sp_chinese_translation/
 │  └─ ...                              资源容器解析所需的精简 Python 依赖
 ├─ translations/
 │  ├─ official_assets_zh.json          默认中文词库
+│  ├─ control_types_zh.json             按控件类型隔离的专属词库
 │  └─ user_added_zh.json               无法溯源时按需创建的用户词库
 └─ THIRD_PARTY_LICENSES.txt              第三方依赖许可证（合并文件）
 ```

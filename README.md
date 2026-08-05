@@ -13,7 +13,9 @@
 - 鼠标悬停在普通翻译文字及插件汉化的菜单项上时显示英文原文。
 - 资产缩略图区域保留 Painter 官方大图预览，不显示冲突的原文提示。
 - `Ctrl + 鼠标右键`直接修改当前翻译，并写回该词条所属的原始 JSON 词库。
-- 内置翻译词条提取器，可扫描资源文件和 GLSL 材质元数据。
+- “更改翻译”窗口显示当前控件的用途和实际 Qt 类型，并使用 Painter 当前界面配色。
+- “中文翻译工具”内的“翻译图层面板”开关默认开启；图层通道、混合模式、其他控件和用户创建的图层名称使用独立规则翻译，不修改项目中保存的实际图层名称。
+- 内置中文翻译工具，可扫描资源文件和 GLSL 材质元数据。
 - 可通过 Painter 官方资源接口导出资产库中尚未翻译的资产名称。
 - 支持加载插件 `translations` 目录下的所有 `*_zh.json` 词库。
 
@@ -80,11 +82,11 @@
 
 普通鼠标右键完全交给 Painter，不会触发插件编辑窗口，也不会影响 Painter 原有右键菜单。
 
-## 翻译词条提取器
+## 中文翻译工具
 
-点击 Painter 顶部菜单栏中的“翻译词条提取器”打开工具。
+点击 Painter 顶部菜单栏中的“中文翻译工具”打开工具。图层面板翻译开关也位于此窗口中，默认开启；关闭后会恢复图层面板中由插件修改的显示文字。
 
-提取器可执行以下操作：
+中文翻译工具可执行以下操作：
 
 - 递归扫描指定资源目录。
 - 从支持的资源容器中提取 XML 元数据词条。
@@ -160,7 +162,7 @@ translations\official_assets_zh.json
 sp_chinese_translation/
 ├─ __init__.py                         Python 插件入口和词条提取器
 ├─ packages/
-│  ├─ sp_native_asset_delegate.dll     原生界面与资源列表翻译模块
+│  ├─ sp_translation_delegate.dll      C++ 界面与资源列表翻译模块
 │  └─ ...                              资源容器解析所需的精简 Python 依赖
 ├─ translations/
 │  ├─ official_assets_zh.json          默认中文词库
@@ -196,6 +198,11 @@ sp_chinese_translation/
 
 ## 仓库结构
 
-开发者请参阅根目录《整理说明.md》：插件源码位于 `source/sp_chinese_translation/`，
-C++ 源码位于 `source/c++/`，工具脚本统一在 `scripts/`，
-发布包由 `scripts/build_package.py` 生成到 `dist/sp_chinese_translation.zip`。
+插件源码位于 `source/sp_chinese_translation/`，C++ 源码位于 `source/c++/`，
+工具脚本统一在 `scripts/`，发布包由 `scripts/build_package.py` 生成到
+`dist/sp_chinese_translation.zip`。
+该脚本会先从 `source/c++/translation_ui_delegate.cpp` 重新编译 C++ 翻译模块；编译成功后才会打包，运行方式为：
+
+```text
+python scripts/build_package.py
+```

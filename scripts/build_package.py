@@ -1,16 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build the distributable sp_chinese_translation.zip from source/.
+"""Compile and package the Substance Painter translation plug-in.
 
 Layout:
     source/sp_chinese_translation/    canonical plugin source (single source of truth)
+    source/c++/                       C++ translation delegate and compact Qt SDK
     dist/sp_chinese_translation.zip   generated release archive (zip root == plugin content)
 
-Usage:
+One-click build (run from the repository root):
     python scripts/build_package.py
+
+The command always configures and compiles ``sp_translation_delegate.dll``
+before creating the ZIP. A compile failure stops packaging, so an old DLL can
+never be published accidentally.
+
+Requirements and notes:
+    * Windows x64 with CMake and MSVC Build Tools / Visual Studio C++ tools.
+    * Keep ``source/c++/qt-sdk`` headers and the three Qt6*.lib import libraries.
+    * Substance Painter must be closed only when installing/replacing the DLL;
+      it does not need to be closed merely to build this archive.
+    * The ZIP root is the plug-in content. Extract it directly into a folder
+      named ``sp_chinese_translation`` under Painter's python/plugins folder.
 """
 
+import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -21,20 +36,22 @@ SRC = ROOT / "source" / "sp_chinese_translation"
 DIST = ROOT / "dist"
 OUT = DIST / "sp_chinese_translation.zip"
 README = ROOT / "README.md"
-
-# Possible outputs of the native CMake build. When a freshly built DLL exists
-# it overrides the one in source/; otherwise the existing source/ DLL is kept.
-NATIVE_DLL_CANDIDATES = [
-    ROOT / "source" / "c++" / "build" / "Release" / "sp_native_asset_delegate.dll",
-    ROOT / "source" / "c++" / "build" / "x64" / "Release" / "sp_native_asset_delegate.dll",
-]
-
+CXX_SRC = ROOT / "source" / "c++"
+CXX_BUILD = CXX_SRC / "build"
+DELEGATE_DLL = CXX_BUILD / "Release" / "sp_translation_delegate.dll"
+PACKAGED_DELEGATE_DLL = SRC / "packages" / "sp_translation_delegate.dll"
+LEGACY_NATIVE_DLL = SRC / "packages" / "sp_native_asset_delegate.dll"
 
 def _check_required_files() -> None:
     required = [
         SRC / "__init__.py",
         SRC / "translations" / "official_assets_zh.json",
-        SRC / "packages" / "sp_native_asset_delegate.dll",
+        README,
+        CXX_SRC / "CMakeLists.txt",
+        CXX_SRC / "translation_ui_delegate.cpp",
+        CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Core.lib",
+        CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Gui.lib",
+        CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Widgets.lib",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -44,24 +61,70 @@ def _check_required_files() -> None:
         sys.exit(1)
 
 
+def _validate_sources() -> None:
+    """Fail before compilation when the canonical source is malformed."""
+    plugin_source = SRC / "__init__.py"
+    compile(plugin_source.read_text(encoding="utf-8"), str(plugin_source), "exec")
+
+    dictionary_path = SRC / "translations" / "official_assets_zh.json"
+    payload = json.loads(dictionary_path.read_text(encoding="utf-8-sig"))
+    if payload.get("$schema") != "sp-translation-v1":
+        raise ValueError("official_assets_zh.json 的 $schema 无效")
+    if payload.get("language") != "zh-CN":
+        raise ValueError("official_assets_zh.json 的 language 必须是 zh-CN")
+    translations = payload.get("translations")
+    if not isinstance(translations, dict):
+        raise ValueError("official_assets_zh.json 缺少 translations 对象")
+    invalid = [key for key, value in translations.items()
+               if not isinstance(key, str) or not key
+               or not isinstance(value, str) or not value]
+    if invalid:
+        raise ValueError(f"official_assets_zh.json 含无效词条: {invalid[:5]}")
+
+
+def _build_delegate() -> None:
+    """Build the C++ translation delegate and update the canonical package."""
+    cmake = shutil.which("cmake")
+    if cmake is None:
+        raise RuntimeError("未找到 CMake，请先安装 CMake 并加入 PATH。")
+
+    print("配置 C++ 原生模块……")
+    subprocess.run(
+        [cmake, "-S", str(CXX_SRC), "-B", str(CXX_BUILD)],
+        check=True,
+    )
+    print("编译 C++ 原生模块（Release）……")
+    subprocess.run(
+        [cmake, "--build", str(CXX_BUILD), "--config", "Release"],
+        check=True,
+    )
+    if not DELEGATE_DLL.is_file():
+        raise RuntimeError(f"编译完成但没有生成 DLL：{DELEGATE_DLL}")
+
+    PACKAGED_DELEGATE_DLL.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(DELEGATE_DLL, PACKAGED_DELEGATE_DLL)
+    LEGACY_NATIVE_DLL.unlink(missing_ok=True)
+    print("已更新 C++ 翻译模块:", PACKAGED_DELEGATE_DLL)
+
+
 def main() -> None:
+    # A failed build must not leave an older archive that looks current.
+    OUT.unlink(missing_ok=True)
     _check_required_files()
+    _validate_sources()
+    _build_delegate()
     DIST.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="sp_pkg_") as tmp:
         pkg = Path(tmp) / "sp_chinese_translation"
-        shutil.copytree(SRC, pkg)
+        shutil.copytree(
+            SRC,
+            pkg,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
 
         # The release archive always ships the current top-level README.
         shutil.copy2(README, pkg / "README.md")
-
-        # A freshly compiled native DLL (if present) wins over source/.
-        fresh_dll = next((path for path in NATIVE_DLL_CANDIDATES if path.is_file()), None)
-        if fresh_dll is not None:
-            shutil.copy2(fresh_dll, pkg / "packages" / "sp_native_asset_delegate.dll")
-            print("使用新编译的 DLL:", fresh_dll)
-        else:
-            print("未发现新编译的 DLL，沿用 source/sp_chinese_translation/packages 中的现有 DLL。")
 
         file_count = 0
         with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -69,6 +132,21 @@ def main() -> None:
                 if path.is_file():
                     archive.write(path, path.relative_to(pkg).as_posix())
                     file_count += 1
+
+    with zipfile.ZipFile(OUT, "r") as archive:
+        names = archive.namelist()
+        required = {"__init__.py", "packages/sp_translation_delegate.dll",
+                    "translations/official_assets_zh.json", "README.md"}
+        missing = required.difference(names)
+        if missing:
+            OUT.unlink(missing_ok=True)
+            raise RuntimeError(f"发布包缺少必要文件: {sorted(missing)}")
+        if any(name.startswith("sp_chinese_translation/") for name in names):
+            OUT.unlink(missing_ok=True)
+            raise RuntimeError("发布包错误地包含同名外层目录")
+        if any("__pycache__" in name or name.endswith(".pyc") for name in names):
+            OUT.unlink(missing_ok=True)
+            raise RuntimeError("发布包包含 Python 缓存文件")
 
     size_mb = OUT.stat().st_size / (1024 * 1024)
     print(f"已生成 {OUT}  ({file_count} 个文件, {size_mb:.2f} MB)")

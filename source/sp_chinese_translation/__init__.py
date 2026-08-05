@@ -4,7 +4,6 @@ Substance Painter 全控件通用 + 资源库汉化插件 (资源分类树 + 资
 支持：Substance 3D Painter 11.x (PySide6 / Qt6)
 """
 
-import builtins
 import ctypes
 import json
 import os
@@ -20,17 +19,17 @@ import substance_painter as sp
 from PySide6 import QtCore, QtGui, QtWidgets
 from shiboken6 import delete, getCppPointer, isValid
 
-if not hasattr(builtins, "_sp_translation_delegate_keepalive"):
-    builtins._sp_translation_delegate_keepalive = []
-
 IS_APP_QUITTING = False
 IS_CLEANING = False
 IS_TRANSLATION_ENABLED = True
+TRANSLATE_LAYERS_PANEL = True
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
 PACKAGES_DIR = os.path.join(PLUGIN_DIR, "packages")
-NATIVE_DLL_PATH = os.path.join(PACKAGES_DIR, "sp_native_asset_delegate.dll")
+DELEGATE_DLL_PATH = os.path.join(PACKAGES_DIR, "sp_translation_delegate.dll")
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
+MAX_ARCHIVE_MEMBERS = 50_000
+MAX_NESTED_ARCHIVES = 128
 
 
 # ==========================================
@@ -51,7 +50,7 @@ def is_inside_layers_panel(w):
     if not is_safe(w):
         return False
 
-    curr = w.parent() if hasattr(w, "parent") else None
+    curr = w
     while curr is not None and is_safe(curr):
         if isinstance(curr, QtWidgets.QDockWidget):
             title = curr.windowTitle().strip()
@@ -126,7 +125,6 @@ def load_translation_packages():
 # destroying the resource view. The DLL pins itself in memory until process
 # exit, so its C++ vtable remains valid throughout Qt shutdown.
 _native_delegate = None
-_native_dictionary_loaded = False
 
 
 def _load_native_delegate():
@@ -134,21 +132,31 @@ def _load_native_delegate():
     if _native_delegate is not None:
         return _native_delegate
 
-    path = NATIVE_DLL_PATH
+    path = DELEGATE_DLL_PATH
     try:
         dll = ctypes.CDLL(path)
         dll.sp_delegate_api_version.restype = ctypes.c_int
         dll.sp_delegate_clear_translations.argtypes = []
+        dll.sp_delegate_clear_translations.restype = None
         dll.sp_delegate_reserve_translations.argtypes = [ctypes.c_int]
+        dll.sp_delegate_reserve_translations.restype = None
         dll.sp_delegate_add_translation.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        dll.sp_delegate_add_translation.restype = None
         dll.sp_delegate_set_translation_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        dll.sp_delegate_set_translation_path.restype = None
         dll.sp_delegate_set_fallback_path.argtypes = [ctypes.c_wchar_p]
+        dll.sp_delegate_set_fallback_path.restype = None
         dll.sp_delegate_set_enabled.argtypes = [ctypes.c_int]
+        dll.sp_delegate_set_enabled.restype = None
+        dll.sp_delegate_set_translate_layers.argtypes = [ctypes.c_int]
+        dll.sp_delegate_set_translate_layers.restype = None
         dll.sp_delegate_install.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install.restype = ctypes.c_int
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
-        if dll.sp_delegate_api_version() != 6:
+        api_version = dll.sp_delegate_api_version()
+        if api_version != 7:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 7，实际 {api_version}")
             return None
         _native_delegate = dll
     except Exception as exc:
@@ -158,7 +166,6 @@ def _load_native_delegate():
 
 
 def _sync_native_dictionary():
-    global _native_dictionary_loaded
     dll = _load_native_delegate()
     if dll is None:
         return False
@@ -167,6 +174,7 @@ def _sync_native_dictionary():
         dll.sp_delegate_set_fallback_path(
             os.path.join(TRANSLATIONS_DIR, "user_added_zh.json")
         )
+        dll.sp_delegate_set_translate_layers(int(TRANSLATE_LAYERS_PANEL))
         dll.sp_delegate_reserve_translations(len(TRANSLATE_DICT))
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
@@ -175,7 +183,6 @@ def _sync_native_dictionary():
                 if source_path:
                     dll.sp_delegate_set_translation_path(source, source_path)
         dll.sp_delegate_set_enabled(1)
-        _native_dictionary_loaded = True
         return True
     except Exception as exc:
         print(">>> 原生资源翻译字典同步失败:", exc)
@@ -186,6 +193,15 @@ def _install_native_delegate(view):
     dll = _load_native_delegate()
     if dll is None or not is_safe(view):
         return False
+    try:
+        pointer = getCppPointer(view)[0]
+        if not pointer:
+            return False
+        result = dll.sp_delegate_install(ctypes.c_void_p(pointer))
+        return result in (1, 2)
+    except Exception as exc:
+        print(">>> C++ 资源翻译 delegate 安装失败:", exc)
+        return False
 
 
 def _install_native_ui(app):
@@ -194,16 +210,11 @@ def _install_native_ui(app):
         return False
     try:
         pointer = getCppPointer(app)[0]
+        if not pointer:
+            return False
         return dll.sp_delegate_install_ui(ctypes.c_void_p(pointer)) == 1
     except Exception as exc:
-        print(">>> 原生界面翻译引擎安装失败:", exc)
-        return False
-    try:
-        pointer = getCppPointer(view)[0]
-        result = dll.sp_delegate_install(ctypes.c_void_p(pointer))
-        return result in (1, 2)
-    except Exception as exc:
-        print(">>> 原生资源翻译 delegate 安装失败:", exc)
+        print(">>> C++ 界面翻译引擎安装失败:", exc)
         return False
 
 
@@ -503,9 +514,9 @@ def _apply_asset_delegates():
                     # exposes core index methods as private through PySide, so
                     # install directly without probing the model.
                     if meta_name == "Alg::ResourceListView" and w.objectName() == "resources":
-                        if not w.property("_cn_native_asset_delegate_installed"):
+                        if not w.property("_cn_translation_delegate_installed"):
                             if _install_native_delegate(w):
-                                w.setProperty("_cn_native_asset_delegate_installed", True)
+                                w.setProperty("_cn_translation_delegate_installed", True)
                                 print(">>> 已安装原生资源列表翻译 delegate: Alg::ResourceListView")
                         continue
 
@@ -516,9 +527,9 @@ def _apply_asset_delegates():
                     # native dictionary delegate.
                     if (isinstance(w, QtWidgets.QTreeView)
                             and _is_resource_folder_tree(w)):
-                        if not w.property("_cn_native_asset_delegate_installed"):
+                        if not w.property("_cn_translation_delegate_installed"):
                             if _install_native_delegate(w):
-                                w.setProperty("_cn_native_asset_delegate_installed", True)
+                                w.setProperty("_cn_translation_delegate_installed", True)
                                 print(">>> 已安装原生资源目录树翻译 delegate")
                         continue
 
@@ -528,9 +539,9 @@ def _apply_asset_delegates():
                     # contain dictionary matches, while leaving unrelated
                     # Painter views and their custom delegates untouched.
                     if (needs_delegate and isinstance(w, QtWidgets.QTreeView)
-                            and not w.property("_cn_native_asset_delegate_installed")):
+                            and not w.property("_cn_translation_delegate_installed")):
                         if _install_native_delegate(w):
-                            w.setProperty("_cn_native_asset_delegate_installed", True)
+                            w.setProperty("_cn_translation_delegate_installed", True)
     except Exception:
         pass
 
@@ -676,10 +687,41 @@ def _load_archive_modules():
 
 
 def _safe_archive_names(names):
+    names = list(names)
+    if len(names) > MAX_ARCHIVE_MEMBERS:
+        raise ValueError(f"容器条目过多: {len(names)}")
     for name in names:
         path = pathlib.PurePosixPath(str(name).replace("\\", "/"))
         if path.is_absolute() or ".." in path.parts:
             raise ValueError(f"资产包含不安全路径: {name}")
+
+
+def _archive_entry_is_link(entry):
+    value = getattr(entry, "is_symlink", False)
+    return bool(value() if callable(value) else value)
+
+
+def _write_json_atomic(path, payload):
+    """Write UTF-8 JSON without leaving a partial destination on failure."""
+    destination = os.path.abspath(path)
+    directory = os.path.dirname(destination) or "."
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".sp_translation_", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def _parse_asset_xml(path, attributes):
@@ -769,11 +811,11 @@ def _parse_glsl_metadata(path, attributes):
     return items
 
 
-class LabelExtractorDialog(QtWidgets.QDialog):
+class ChineseTranslationToolDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("翻译词条提取器")
-        self.setObjectName("sp_translation_label_extractor")
+        self.setWindowTitle("中文翻译工具")
+        self.setObjectName("sp_chinese_translation_tool")
         self.setMinimumSize(720, 570)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self._files = []
@@ -795,6 +837,22 @@ class LabelExtractorDialog(QtWidgets.QDialog):
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
+
+        translation_group = QtWidgets.QGroupBox("界面翻译", self)
+        translation_layout = QtWidgets.QVBoxLayout(translation_group)
+        self.layers_translation_check = QtWidgets.QCheckBox(
+            "翻译图层面板（包括用户创建的图层名称）",
+            translation_group,
+        )
+        self.layers_translation_check.setChecked(TRANSLATE_LAYERS_PANEL)
+        self.layers_translation_check.setToolTip(
+            "开启后使用图层面板专用规则翻译全部控件和图层名称；仅改变显示，不修改项目数据。"
+        )
+        self.layers_translation_check.toggled.connect(
+            _set_layers_panel_translation
+        )
+        translation_layout.addWidget(self.layers_translation_check)
+        layout.addWidget(translation_group)
 
         form = QtWidgets.QFormLayout()
         self.folder_edit = QtWidgets.QLineEdit()
@@ -999,10 +1057,7 @@ class LabelExtractorDialog(QtWidgets.QDialog):
                 },
                 "translations": dict(sorted(translations.items(), key=lambda item: item[0].casefold())),
             }
-            os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-            with open(output, "w", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=2)
-                stream.write("\n")
+            _write_json_atomic(output, payload)
             self.output_edit.setText(output)
             self.status_label.setText(f"资产库导出完成：{len(names)} 条词条")
             self.log.appendPlainText(
@@ -1126,12 +1181,19 @@ class LabelExtractorDialog(QtWidgets.QDialog):
         py7zr, h5py = _load_archive_modules()
         if py7zr.is_7zfile(asset_path):
             with py7zr.SevenZipFile(asset_path, mode="r") as archive:
-                _safe_archive_names(archive.getnames())
+                entries = archive.list()
+                _safe_archive_names(entry.filename for entry in entries)
+                if any(_archive_entry_is_link(entry) for entry in entries):
+                    raise ValueError("容器包含不允许的符号链接")
                 archive.extractall(path=destination)
             return "7z"
         if zipfile.is_zipfile(asset_path):
             with zipfile.ZipFile(asset_path, mode="r") as archive:
-                _safe_archive_names(archive.namelist())
+                entries = archive.infolist()
+                _safe_archive_names(entry.filename for entry in entries)
+                if any((entry.external_attr >> 16) & 0o170000 == 0o120000
+                       for entry in entries):
+                    raise ValueError("容器包含不允许的符号链接")
                 archive.extractall(path=destination)
             return "zip"
         if h5py.is_hdf5(asset_path):
@@ -1165,6 +1227,8 @@ class LabelExtractorDialog(QtWidgets.QDialog):
             path, depth = queue.pop(0)
             if depth > 3 or path.suffix.lower() == ".xml":
                 continue
+            if expanded >= MAX_NESTED_ARCHIVES:
+                raise ValueError("嵌套容器超过 128 个安全上限")
             try:
                 py7zr, h5py = _load_archive_modules()
                 is_container = (py7zr.is_7zfile(path) or zipfile.is_zipfile(path)
@@ -1290,10 +1354,7 @@ class LabelExtractorDialog(QtWidgets.QDialog):
             "translations": dict(sorted(translations.items(), key=lambda item: item[0].casefold())),
         }
         try:
-            os.makedirs(os.path.dirname(self._output) or ".", exist_ok=True)
-            with open(self._output, "w", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=2)
-                stream.write("\n")
+            _write_json_atomic(self._output, payload)
             self.status_label.setText(
                 f"完成：{len(self._items)} 条词条，{len(self._failed)} 个失败"
             )
@@ -1317,10 +1378,28 @@ _label_extractor_action = None
 _label_extractor_menu_bar = None
 
 
-def show_label_extractor():
+def _set_layers_panel_translation(enabled):
+    """Toggle C++ translation of UI controls inside Painter's Layers panel."""
+    global TRANSLATE_LAYERS_PANEL
+    TRANSLATE_LAYERS_PANEL = bool(enabled)
+    QtCore.QSettings().setValue(
+        "sp_chinese_translation/translate_layers_panel",
+        TRANSLATE_LAYERS_PANEL,
+    )
+    dll = _load_native_delegate()
+    if dll is not None:
+        try:
+            dll.sp_delegate_set_translate_layers(int(TRANSLATE_LAYERS_PANEL))
+        except Exception as exc:
+            print(">>> 切换图层面板翻译失败:", exc)
+
+
+def show_translation_tool():
     global _label_extractor_dialog
     if not is_safe(_label_extractor_dialog):
-        _label_extractor_dialog = LabelExtractorDialog(sp.ui.get_main_window())
+        _label_extractor_dialog = ChineseTranslationToolDialog(
+            sp.ui.get_main_window()
+        )
     _label_extractor_dialog.show()
     _label_extractor_dialog.raise_()
     _label_extractor_dialog.activateWindow()
@@ -1361,6 +1440,7 @@ def close_plugin():
         except Exception:
             pass
     _label_extractor_action = None
+
     _label_extractor_menu_bar = None
 
     if _native_delegate is not None:
@@ -1400,6 +1480,7 @@ def _set_registered_plugin_display_name(main_window):
 
 def start_plugin():
     global IS_APP_QUITTING, IS_CLEANING, IS_TRANSLATION_ENABLED
+    global TRANSLATE_LAYERS_PANEL
     global _label_extractor_action, _label_extractor_menu_bar
 
     app = QtWidgets.QApplication.instance()
@@ -1412,18 +1493,26 @@ def start_plugin():
     IS_APP_QUITTING = False
     IS_CLEANING = False
     IS_TRANSLATION_ENABLED = True
+    TRANSLATE_LAYERS_PANEL = QtCore.QSettings().value(
+        "sp_chinese_translation/translate_layers_panel", True, type=bool
+    )
 
     phase_started = time.perf_counter()
     load_translation_packages()
     json_load_ms = (time.perf_counter() - phase_started) * 1000.0
 
     phase_started = time.perf_counter()
-    _sync_native_dictionary()
+    native_dictionary_ok = _sync_native_dictionary()
     native_sync_ms = (time.perf_counter() - phase_started) * 1000.0
 
     phase_started = time.perf_counter()
-    _install_native_ui(app)
+    native_ui_ok = _install_native_ui(app)
     native_ui_ms = (time.perf_counter() - phase_started) * 1000.0
+    if not native_dictionary_ok or not native_ui_ok:
+        print(
+            ">>> 原生翻译引擎未完全启用: "
+            f"dictionary={native_dictionary_ok}, ui={native_ui_ok}"
+        )
 
     main_window = sp.ui.get_main_window()
     # Painter starts this plugin while it is still populating the Python menu.
@@ -1432,9 +1521,9 @@ def start_plugin():
     QtCore.QTimer.singleShot(
         0, lambda window=main_window: _set_registered_plugin_display_name(window)
     )
-    _label_extractor_action = QtGui.QAction("翻译词条提取器", main_window)
-    _label_extractor_action.setObjectName("sp_translation_label_extractor_action")
-    _label_extractor_action.triggered.connect(show_label_extractor)
+    _label_extractor_action = QtGui.QAction("中文翻译工具", main_window)
+    _label_extractor_action.setObjectName("sp_chinese_translation_tool_action")
+    _label_extractor_action.triggered.connect(show_translation_tool)
     _label_extractor_menu_bar = main_window.menuBar()
     _label_extractor_menu_bar.addAction(_label_extractor_action)
 

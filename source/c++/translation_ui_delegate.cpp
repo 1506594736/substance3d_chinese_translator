@@ -14,7 +14,9 @@
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QAction>
+#include <QtGui/QColor>
 #include <QtGui/QPainter>
+#include <QtGui/QPalette>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QAbstractSlider>
@@ -34,6 +36,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStyledItemDelegate>
 #include <QtWidgets/QTabBar>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QToolTip>
 #include <QtWidgets/QTreeView>
 #include <QtWidgets/QVBoxLayout>
@@ -47,9 +50,11 @@ QHash<QString, QString> g_translationPaths;
 QString g_fallbackPath;
 QPointer<QWidget> g_originalTooltipOwner;
 bool g_enabled = true;
+bool g_translateLayersPanel = true;
 constexpr auto kSourceProperty = "_sp_translation_source";
 constexpr auto kComboSourcesProperty = "_sp_translation_combo_sources";
 constexpr auto kTabSourcesProperty = "_sp_translation_tab_sources";
+constexpr auto kTranslatingComboProperty = "_sp_translation_combo_busy";
 
 QComboBox *owningComboBox(QAbstractItemView *view) {
     if (!view)
@@ -76,26 +81,22 @@ QString translated(const QString &text, bool removeMnemonic = false) {
     QString key = text.trimmed();
     if (removeMnemonic)
         key.remove(u'&');
-    // Painter's own localization wins. Never reinterpret or overwrite text
-    // that the host application already presents in Chinese.
+    // Painter's own localization wins. Instance-specific source properties,
+    // not this global lookup, handle text previously produced by the plug-in.
     for (const QChar character : key) {
         const uint code = character.unicode();
         if ((code >= 0x3400 && code <= 0x4DBF) ||
             (code >= 0x4E00 && code <= 0x9FFF))
             return {};
     }
-    // A widget may still contain the previous Chinese translation after a
-    // live edit. Resolve it back to the English source before looking up the
-    // latest value so changes appear immediately without restarting Painter.
-    const auto original = g_originals.constFind(key);
-    if (original != g_originals.cend())
-        key = original.value();
     const auto found = g_translations.constFind(key);
     return found == g_translations.cend() ? QString() : found.value();
 }
 
 bool isInsideLayersPanel(QWidget *widget) {
-    for (QObject *parent = widget ? widget->parent() : nullptr; parent; parent = parent->parent()) {
+    if (!widget)
+        return false;
+    for (QObject *parent = widget; parent; parent = parent->parent()) {
         const QString className = QString::fromLatin1(parent->metaObject()->className());
         const QString objectName = parent->objectName();
         if (className.contains("LayerStack") || className.contains("LayerTree") ||
@@ -110,13 +111,158 @@ bool isInsideLayersPanel(QWidget *widget) {
     return false;
 }
 
-class NativeAssetDelegate final : public QStyledItemDelegate {
+QString sourceForObject(QObject *object, const QString &displayedText) {
+    QString displayed = displayedText.trimmed();
+    displayed.remove(u'&');
+    if (!object)
+        return displayed;
+    const QString stored = object->property(kSourceProperty).toString();
+    if (stored.isEmpty())
+        return displayed;
+    if (displayed == stored || g_translations.value(stored) == displayed ||
+        g_originals.value(displayed) == stored)
+        return stored;
+    // Painter reused the object for a different value; ignore stale metadata.
+    return displayed;
+}
+
+bool shouldExcludeLayersPanel(QWidget *widget) {
+    return !g_translateLayersPanel && isInsideLayersPanel(widget);
+}
+
+const QHash<QString, QString> &layerBlendTranslations() {
+    static const QHash<QString, QString> values = {
+        {QStringLiteral("Normal"), QStringLiteral("正常")},
+        {QStringLiteral("Passthrough"), QStringLiteral("穿透")},
+        {QStringLiteral("Disable"), QStringLiteral("禁用")},
+        {QStringLiteral("Replace"), QStringLiteral("替换")},
+        {QStringLiteral("Multiply"), QStringLiteral("正片叠底")},
+        {QStringLiteral("Divide"), QStringLiteral("除法")},
+        {QStringLiteral("Inverse divide"), QStringLiteral("反向除法")},
+        {QStringLiteral("Darken (Min)"), QStringLiteral("变暗（最小值）")},
+        {QStringLiteral("Lighten (Max)"), QStringLiteral("变亮（最大值）")},
+        {QStringLiteral("Linear dodge (Add)"), QStringLiteral("线性减淡（添加）")},
+        {QStringLiteral("Subtract"), QStringLiteral("减去")},
+        {QStringLiteral("Inverse Subtract"), QStringLiteral("反向减去")},
+        {QStringLiteral("Difference"), QStringLiteral("差值")},
+        {QStringLiteral("Exclusion"), QStringLiteral("排除")},
+        {QStringLiteral("Signed addition (AddSub)"), QStringLiteral("有符号相加（加减）")},
+        {QStringLiteral("Overlay"), QStringLiteral("叠加")},
+        {QStringLiteral("Screen"), QStringLiteral("滤色")},
+        {QStringLiteral("Linear burn"), QStringLiteral("线性加深")},
+        {QStringLiteral("Color burn"), QStringLiteral("颜色加深")},
+        {QStringLiteral("Color dodge"), QStringLiteral("颜色减淡")},
+        {QStringLiteral("Soft light"), QStringLiteral("柔光")},
+        {QStringLiteral("Hard light"), QStringLiteral("强光")},
+        {QStringLiteral("Vivid light"), QStringLiteral("亮光")},
+        {QStringLiteral("Linear light"), QStringLiteral("线性光")},
+        {QStringLiteral("Pin light"), QStringLiteral("点光")},
+        {QStringLiteral("Tint"), QStringLiteral("色调")},
+        {QStringLiteral("Saturation"), QStringLiteral("饱和度")},
+        {QStringLiteral("Color"), QStringLiteral("颜色")},
+        {QStringLiteral("Value"), QStringLiteral("明度")},
+        {QStringLiteral("Normal map combine"), QStringLiteral("法线贴图合并")},
+        {QStringLiteral("Normal map detail"), QStringLiteral("法线贴图细节")},
+        {QStringLiteral("Normal map inverse detail"), QStringLiteral("法线贴图反向细节")},
+    };
+    return values;
+}
+
+QString comboSourceAt(QComboBox *combo, int index) {
+    if (!combo || index < 0 || index >= combo->count())
+        return {};
+    const QStringList sources =
+        combo->property(kComboSourcesProperty).toStringList();
+    const QString displayed = combo->itemText(index).trimmed();
+    if (index < sources.size() && !sources.at(index).isEmpty()) {
+        const QString stored = sources.at(index);
+        if (displayed == stored || g_translations.value(stored) == displayed ||
+            g_originals.value(displayed) == stored)
+            return stored;
+    }
+    const auto original = g_originals.constFind(displayed);
+    return original == g_originals.cend() ? displayed : original.value();
+}
+
+bool isLayerBlendModeCombo(QComboBox *combo) {
+    if (!combo || !isInsideLayersPanel(combo))
+        return false;
+    for (int i = 0; i < combo->count(); ++i) {
+        const QString source = comboSourceAt(combo, i);
+        if (source == QStringLiteral("Passthrough") ||
+            source == QStringLiteral("Normal map combine"))
+            return true;
+    }
+    return false;
+}
+
+bool isLayerBlendModeButton(QToolButton *button) {
+    return button && button->objectName() == QStringLiteral("blendingMode") &&
+           isInsideLayersPanel(button);
+}
+
+bool isLayerChannelSelector(QComboBox *combo) {
+    return combo && combo->objectName() == QStringLiteral("channelSelector") &&
+           isInsideLayersPanel(combo);
+}
+
+void lockLayerChannelPopupWidth(QComboBox *combo) {
+    if (!isLayerChannelSelector(combo) || !combo->view())
+        return;
+    const int width = combo->width();
+    combo->view()->setMinimumWidth(width);
+    combo->view()->setMaximumWidth(width);
+    QWidget *popup = combo->view()->window();
+    if (popup && popup != combo->window() && popup != combo->view()) {
+        popup->setMinimumWidth(width);
+        popup->setMaximumWidth(width);
+    }
+}
+
+QString actionSource(QAction *action) {
+    if (!action)
+        return {};
+    const QString displayed = action->text().trimmed();
+    const QString instanceSource = sourceForObject(action, displayed);
+    if (instanceSource != displayed)
+        return instanceSource;
+    const auto original = g_originals.constFind(displayed);
+    return original == g_originals.cend() ? displayed : original.value();
+}
+
+bool isLayerBlendModeMenu(QMenu *menu) {
+    if (!menu)
+        return false;
+    if (auto *button = qobject_cast<QToolButton *>(menu->parentWidget())) {
+        if (isLayerBlendModeButton(button))
+            return true;
+    }
+    for (QAction *action : menu->actions()) {
+        const QString source = actionSource(action);
+        if (source == QStringLiteral("Passthrough") ||
+            source == QStringLiteral("Normal map combine"))
+            return true;
+    }
+    return false;
+}
+
+QString menuTranslation(QMenu *menu, const QString &source) {
+    return isLayerBlendModeMenu(menu)
+        ? layerBlendTranslations().value(source)
+        : g_translations.value(source);
+}
+
+class TranslationItemDelegate final : public QStyledItemDelegate {
 public:
-    explicit NativeAssetDelegate(QAbstractItemView *view, bool compactGrid = false)
-        : QStyledItemDelegate(view), compactGrid_(compactGrid) {}
+    explicit TranslationItemDelegate(QAbstractItemView *view,
+                                     bool compactGrid = false,
+                                     bool layersPanel = false)
+        : QStyledItemDelegate(view), compactGrid_(compactGrid),
+          layersPanel_(layersPanel) {}
 
     QString displayText(const QVariant &value, const QLocale &locale) const override {
-        if (g_enabled && value.metaType().id() == QMetaType::QString) {
+        if (g_enabled && (!layersPanel_ || g_translateLayersPanel) &&
+            value.metaType().id() == QMetaType::QString) {
             const QString result = translated(value.toString());
             if (!result.isNull())
                 return result;
@@ -207,12 +353,14 @@ public:
 
 private:
     bool compactGrid_ = false;
+    bool layersPanel_ = false;
 };
 
-int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false) {
+int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false,
+                         bool layersPanel = false) {
     if (!view)
         return 0;
-    if (dynamic_cast<NativeAssetDelegate *>(view->itemDelegate())) {
+    if (dynamic_cast<TranslationItemDelegate *>(view->itemDelegate())) {
         view->viewport()->update();
         return 2;
     }
@@ -226,7 +374,8 @@ int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false) {
         }
         view->setTextElideMode(Qt::ElideRight);
     }
-    view->setItemDelegate(new NativeAssetDelegate(view, compactGrid));
+    view->setItemDelegate(
+        new TranslationItemDelegate(view, compactGrid, layersPanel));
     view->viewport()->update();
     return 1;
 }
@@ -270,10 +419,14 @@ bool isResourceFolderTree(QAbstractItemView *view) {
 void translateMenu(QMenu *menu) {
     if (!menu || !g_enabled)
         return;
+    const bool layerBlendMode = isLayerBlendModeMenu(menu);
     for (QAction *action : menu->actions()) {
-        QString source = action->text().trimmed();
-        source.remove(u'&');
-        const QString result = translated(source, true);
+        const QString stored = action->property(kSourceProperty).toString();
+        const QString source = layerBlendMode && !stored.isEmpty()
+            ? stored : actionSource(action);
+        const QString result = layerBlendMode
+            ? layerBlendTranslations().value(source)
+            : translated(source, true);
         if (!result.isNull() && action->text() != result) {
             action->setProperty(kSourceProperty, source);
             action->setText(result);
@@ -306,11 +459,20 @@ void translateWidget(QWidget *widget) {
         qobject_cast<QTabBar *>(widget) ||
         qobject_cast<QDockWidget *>(widget) ||
         qobject_cast<QLineEdit *>(widget);
-    if (!supportedType || isInsideLayersPanel(widget))
+    if (!supportedType || shouldExcludeLayersPanel(widget))
         return;
 
     const QString className = QString::fromLatin1(widget->metaObject()->className());
     if (auto *itemView = qobject_cast<QAbstractItemView *>(widget)) {
+        if (QComboBox *combo = owningComboBox(itemView);
+            isLayerChannelSelector(combo)) {
+            lockLayerChannelPopupWidth(combo);
+            return;
+        }
+        if (g_translateLayersPanel && isInsideLayersPanel(itemView)) {
+            installAssetDelegate(itemView, false, true);
+            return;
+        }
         const bool mainResourceView =
             className == QStringLiteral("Alg::ResourceListView") &&
             widget->objectName() == QStringLiteral("resources");
@@ -327,8 +489,13 @@ void translateWidget(QWidget *widget) {
         return;
     }
     if (auto *button = qobject_cast<QAbstractButton *>(widget)) {
-        QString source = button->text().trimmed();
-        source.remove(u'&');
+        if (auto *toolButton = qobject_cast<QToolButton *>(button);
+            isLayerBlendModeButton(toolButton)) {
+            // Painter deliberately uses compact native labels (Pthr, NMid,
+            // etc.) in this fixed-width button. Translate only its popup menu.
+            return;
+        }
+        const QString source = sourceForObject(button, button->text());
         const QString result = translated(source, true);
         if (!result.isNull() && button->text() != result) {
             button->setProperty(kSourceProperty, source);
@@ -337,8 +504,7 @@ void translateWidget(QWidget *widget) {
         return;
     }
     if (auto *label = qobject_cast<QLabel *>(widget)) {
-        QString source = label->text().trimmed();
-        source.remove(u'&');
+        const QString source = sourceForObject(label, label->text());
         const QString result = translated(source, true);
         if (!result.isNull() && label->text() != result) {
             label->setProperty(kSourceProperty, source);
@@ -347,7 +513,7 @@ void translateWidget(QWidget *widget) {
         return;
     }
     if (auto *group = qobject_cast<QGroupBox *>(widget)) {
-        const QString source = group->title().trimmed();
+        const QString source = sourceForObject(group, group->title());
         const QString result = translated(source);
         if (!result.isNull() && group->title() != result) {
             group->setProperty(kSourceProperty, source);
@@ -356,24 +522,51 @@ void translateWidget(QWidget *widget) {
         return;
     }
     if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+        if (combo->property(kTranslatingComboProperty).toBool())
+            return;
+        combo->setProperty(kTranslatingComboProperty, true);
         QStringList sources = combo->property(kComboSourcesProperty).toStringList();
         sources.resize(combo->count());
+        const bool layerBlendMode = isLayerBlendModeCombo(combo);
+        int widestText = 0;
         for (int i = 0; i < combo->count(); ++i) {
-            const QString source = combo->itemText(i).trimmed();
-            const QString result = translated(source);
+            const QString source = comboSourceAt(combo, i);
+            const QString result = layerBlendMode
+                ? layerBlendTranslations().value(source)
+                : translated(source);
             if (!result.isNull() && combo->itemText(i) != result) {
                 sources[i] = source;
                 combo->setItemText(i, result);
             }
+            widestText = qMax(
+                widestText,
+                combo->fontMetrics().horizontalAdvance(combo->itemText(i)));
         }
         combo->setProperty(kComboSourcesProperty, sources);
+        if (isLayerChannelSelector(combo))
+            lockLayerChannelPopupWidth(combo);
+        if (layerBlendMode) {
+            // Painter gives this selector a narrow default width and elides
+            // values such as "Disable" to "Disa...". Reserve enough room for
+            // the complete contextual translation plus the arrow and margins.
+            combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            combo->setMinimumWidth(qMax(combo->minimumWidth(), widestText + 42));
+        }
+        combo->setProperty(kTranslatingComboProperty, false);
         return;
     }
     if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
         QStringList sources = tabs->property(kTabSourcesProperty).toStringList();
         sources.resize(tabs->count());
         for (int i = 0; i < tabs->count(); ++i) {
-            const QString source = tabs->tabText(i).trimmed();
+            const QString displayed = tabs->tabText(i).trimmed();
+            QString source = displayed;
+            if (i < sources.size() && !sources.at(i).isEmpty()) {
+                const QString stored = sources.at(i);
+                if (displayed == stored || g_translations.value(stored) == displayed ||
+                    g_originals.value(displayed) == stored)
+                    source = stored;
+            }
             const QString result = translated(source);
             if (!result.isNull() && tabs->tabText(i) != result) {
                 sources[i] = source;
@@ -384,7 +577,7 @@ void translateWidget(QWidget *widget) {
         return;
     }
     if (auto *dock = qobject_cast<QDockWidget *>(widget)) {
-        const QString source = dock->windowTitle().trimmed();
+        const QString source = sourceForObject(dock, dock->windowTitle());
         const QString result = translated(source);
         if (!result.isNull() && dock->windowTitle() != result) {
             dock->setProperty(kSourceProperty, source);
@@ -393,9 +586,12 @@ void translateWidget(QWidget *widget) {
         return;
     }
     if (auto *lineEdit = qobject_cast<QLineEdit *>(widget)) {
-        const QString result = translated(lineEdit->placeholderText());
-        if (!result.isNull() && lineEdit->placeholderText() != result)
+        const QString source = sourceForObject(lineEdit, lineEdit->placeholderText());
+        const QString result = translated(source);
+        if (!result.isNull() && lineEdit->placeholderText() != result) {
+            lineEdit->setProperty(kSourceProperty, source);
             lineEdit->setPlaceholderText(result);
+        }
     }
 }
 
@@ -416,7 +612,7 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
             return {};
         QString displayed = action->text().trimmed();
         displayed.remove(u'&');
-        return g_translations.value(source) == displayed ? source : QString();
+        return menuTranslation(menu, source) == displayed ? source : QString();
     }
 
     // The open part of a QComboBox is an independent item-view viewport.
@@ -490,6 +686,15 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
     if (auto *view = qobject_cast<QAbstractItemView *>(widget->parentWidget())) {
         if (widget == view->viewport()) {
             if (isResourceFolderTree(view)) {
+                const QModelIndex index = view->indexAt(position);
+                if (index.isValid()) {
+                    const QString source =
+                        index.data(Qt::DisplayRole).toString().trimmed();
+                    if (g_translations.contains(source))
+                        return source;
+                }
+            }
+            if (g_translateLayersPanel && isInsideLayersPanel(view)) {
                 const QModelIndex index = view->indexAt(position);
                 if (index.isValid()) {
                     const QString source =
@@ -575,7 +780,7 @@ bool shouldSuppressTooltip(QWidget *widget) {
 }
 
 QString contextSourceAt(QWidget *widget, const QPoint &position) {
-    if (!widget || isInsideLayersPanel(widget))
+    if (!widget || shouldExcludeLayersPanel(widget))
         return {};
 
     if (auto *view = qobject_cast<QAbstractItemView *>(widget->parentWidget())) {
@@ -607,7 +812,8 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
             return {};
         displayed = action->text();
         const QString storedSource = action->property(kSourceProperty).toString();
-        if (!storedSource.isEmpty() && g_translations.value(storedSource) == displayed)
+        if (!storedSource.isEmpty() &&
+            menuTranslation(menu, storedSource) == displayed)
             return storedSource;
         // Chinese menu text without our source marker belongs to Painter (or
         // another plug-in), so it must not be offered as one of our entries.
@@ -659,6 +865,42 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
             return {};
     }
     return displayed;
+}
+
+QString controlTypeAt(QWidget *widget) {
+    if (!widget)
+        return QStringLiteral("未知控件");
+    const QString className =
+        QString::fromLatin1(widget->metaObject()->className());
+
+    if (qobject_cast<QMenu *>(widget))
+        return QStringLiteral("菜单项（%1 / QAction）").arg(className);
+    if (auto *view = qobject_cast<QAbstractItemView *>(widget->parentWidget())) {
+        if (widget == view->viewport()) {
+            const QString viewClass =
+                QString::fromLatin1(view->metaObject()->className());
+            if (owningComboBox(view))
+                return QStringLiteral("下拉菜单选项（%1）").arg(viewClass);
+            if (isInsideLayersPanel(view))
+                return QStringLiteral("图层名称（%1）").arg(viewClass);
+            if (isResourceFolderTree(view))
+                return QStringLiteral("资产目录项（%1）").arg(viewClass);
+            return QStringLiteral("列表项目（%1）").arg(viewClass);
+        }
+    }
+    if (qobject_cast<QAbstractButton *>(widget))
+        return QStringLiteral("按钮（%1）").arg(className);
+    if (qobject_cast<QLabel *>(widget))
+        return QStringLiteral("文本标签（%1）").arg(className);
+    if (qobject_cast<QGroupBox *>(widget))
+        return QStringLiteral("分组标题（%1）").arg(className);
+    if (qobject_cast<QComboBox *>(widget))
+        return QStringLiteral("下拉框（%1）").arg(className);
+    if (qobject_cast<QTabBar *>(widget))
+        return QStringLiteral("选项卡（%1）").arg(className);
+    if (qobject_cast<QDockWidget *>(widget))
+        return QStringLiteral("面板标题（%1）").arg(className);
+    return QStringLiteral("界面控件（%1）").arg(className);
 }
 
 bool saveTranslation(const QString &source, const QString &target, QString *error) {
@@ -740,25 +982,111 @@ void refreshTranslatedViews() {
     }
 }
 
-void editTranslation(const QString &source, QWidget *parent) {
+void restoreTranslatedWidget(QWidget *widget) {
+    if (!widget)
+        return;
+    if (auto *view = qobject_cast<QAbstractItemView *>(widget)) {
+        view->viewport()->update();
+        return;
+    }
+    if (auto *menu = qobject_cast<QMenu *>(widget)) {
+        for (QAction *action : menu->actions()) {
+            const QString source = action->property(kSourceProperty).toString();
+            if (!source.isEmpty()) {
+                action->setText(source);
+                action->setProperty(kSourceProperty, QVariant());
+            }
+        }
+        return;
+    }
+    if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+        const QStringList sources =
+            combo->property(kComboSourcesProperty).toStringList();
+        for (int i = 0; i < combo->count() && i < sources.size(); ++i) {
+            if (!sources.at(i).isEmpty())
+                combo->setItemText(i, sources.at(i));
+        }
+        combo->setProperty(kComboSourcesProperty, QVariant());
+        return;
+    }
+    if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
+        const QStringList sources =
+            tabs->property(kTabSourcesProperty).toStringList();
+        for (int i = 0; i < tabs->count() && i < sources.size(); ++i) {
+            if (!sources.at(i).isEmpty())
+                tabs->setTabText(i, sources.at(i));
+        }
+        tabs->setProperty(kTabSourcesProperty, QVariant());
+        return;
+    }
+
+    const QString source = widget->property(kSourceProperty).toString();
+    if (source.isEmpty())
+        return;
+    if (auto *button = qobject_cast<QAbstractButton *>(widget))
+        button->setText(source);
+    else if (auto *label = qobject_cast<QLabel *>(widget))
+        label->setText(source);
+    else if (auto *group = qobject_cast<QGroupBox *>(widget))
+        group->setTitle(source);
+    else if (auto *dock = qobject_cast<QDockWidget *>(widget))
+        dock->setWindowTitle(source);
+    else if (auto *lineEdit = qobject_cast<QLineEdit *>(widget))
+        lineEdit->setPlaceholderText(source);
+    widget->setProperty(kSourceProperty, QVariant());
+}
+
+void setTranslateLayersPanel(bool enabled) {
+    if (g_translateLayersPanel == enabled)
+        return;
+    g_translateLayersPanel = enabled;
+    if (enabled) {
+        refreshTranslatedViews();
+        return;
+    }
+    for (QWidget *widget : QApplication::allWidgets()) {
+        if (isInsideLayersPanel(widget))
+            restoreTranslatedWidget(widget);
+    }
+}
+
+void editTranslation(const QString &source, const QString &controlType,
+                     QWidget *parent) {
     if (source.isEmpty())
         return;
     const QString current = g_translations.value(source, source);
 
-    QDialog dialog(parent);
+    QWidget *dialogParent = QApplication::activeWindow();
+    if (!dialogParent)
+        dialogParent = parent;
+    if (qobject_cast<QMenu *>(dialogParent))
+        dialogParent = nullptr;
+    QDialog dialog(dialogParent);
     dialog.setWindowTitle(QStringLiteral("更改翻译"));
     dialog.setMinimumWidth(460);
+    QPalette dialogPalette = QApplication::palette();
+    const QColor windowColor = dialogPalette.color(QPalette::Window);
+    const QColor editorColor = windowColor.lightness() < 128
+        ? windowColor.lighter(118) : windowColor.darker(104);
+    dialogPalette.setColor(QPalette::Base, editorColor);
+    dialogPalette.setColor(QPalette::AlternateBase, editorColor);
+    dialog.setPalette(dialogPalette);
+    dialog.setAutoFillBackground(true);
 
     auto *layout = new QVBoxLayout(&dialog);
     auto *form = new QFormLayout();
     auto *sourceEdit = new QLineEdit(source, &dialog);
     auto *currentEdit = new QLineEdit(current, &dialog);
     auto *targetEdit = new QLineEdit(current, &dialog);
+    auto *typeEdit = new QLineEdit(controlType, &dialog);
     sourceEdit->setReadOnly(true);
     currentEdit->setReadOnly(true);
+    typeEdit->setReadOnly(true);
     sourceEdit->setObjectName(QStringLiteral("sp_translation_source"));
     currentEdit->setObjectName(QStringLiteral("sp_translation_current"));
     targetEdit->setObjectName(QStringLiteral("sp_translation_target"));
+    typeEdit->setObjectName(QStringLiteral("sp_translation_control_type"));
+    form->addRow(QStringLiteral("控件类型："), typeEdit);
     form->addRow(QStringLiteral("原英文："), sourceEdit);
     form->addRow(QStringLiteral("当前翻译："), currentEdit);
     form->addRow(QStringLiteral("新翻译："), targetEdit);
@@ -795,7 +1123,7 @@ void editTranslation(const QString &source, QWidget *parent) {
     refreshTranslatedViews();
 }
 
-class NativeUiFilter final : public QObject {
+class TranslationUiFilter final : public QObject {
 public:
     using QObject::QObject;
 protected:
@@ -817,12 +1145,13 @@ protected:
                 (mouse->modifiers() & Qt::ControlModifier)) {
                 const QString source = contextSourceAt(menu, mouse->position().toPoint());
                 if (!source.isEmpty()) {
+                    const QString controlType = controlTypeAt(menu);
                     QPointer<QWidget> safeWindow(menu->window());
-                    QTimer::singleShot(0, qApp, [source, safeWindow]() {
+                    QTimer::singleShot(0, qApp, [source, controlType, safeWindow]() {
                         QWidget *parent = safeWindow.data();
                         if (!parent)
                             parent = QApplication::activeWindow();
-                        editTranslation(source, parent);
+                        editTranslation(source, controlType, parent);
                     });
                     event->accept();
                     return true;
@@ -840,10 +1169,11 @@ protected:
             const QString source = contextSourceAt(widget, context->pos());
             if (source.isEmpty())
                 return false;
+            const QString controlType = controlTypeAt(widget);
             QPointer<QWidget> safeWidget(widget);
-            QTimer::singleShot(0, qApp, [source, safeWidget]() {
+            QTimer::singleShot(0, qApp, [source, controlType, safeWidget]() {
                 if (safeWidget)
-                    editTranslation(source, safeWidget.data());
+                    editTranslation(source, controlType, safeWidget.data());
             });
             event->accept();
             return true;
@@ -876,7 +1206,8 @@ protected:
             // controls are covered by creation and layout events.
             if (auto *widget = qobject_cast<QWidget *>(object)) {
                 if (qobject_cast<QLabel *>(widget) ||
-                    qobject_cast<QAbstractButton *>(widget))
+                    qobject_cast<QAbstractButton *>(widget) ||
+                    isLayerChannelSelector(qobject_cast<QComboBox *>(widget)))
                     translateWidget(widget);
             }
         } else if (type == QEvent::Show || type == QEvent::Polish ||
@@ -889,7 +1220,7 @@ protected:
     }
 };
 
-NativeUiFilter *g_filter = nullptr;
+TranslationUiFilter *g_filter = nullptr;
 QTimer *g_fallbackTimer = nullptr;
 
 void scanVisibleWidgets() {
@@ -901,15 +1232,15 @@ void scanVisibleWidgets() {
     }
 }
 
-void pinThisDll() {
+bool pinThisDll() {
     HMODULE module = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                           GET_MODULE_HANDLE_EX_FLAG_PIN,
-                       reinterpret_cast<LPCWSTR>(&pinThisDll), &module);
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_PIN,
+                             reinterpret_cast<LPCWSTR>(&pinThisDll), &module) != 0;
 }
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 6; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 7; }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
     const wchar_t *source, const wchar_t *path) {
@@ -952,13 +1283,20 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enable
         scanVisibleWidgets();
 }
 
+extern "C" __declspec(dllexport) void __cdecl
+sp_delegate_set_translate_layers(int enabled) {
+    setTranslateLayersPanel(enabled != 0);
+}
+
 extern "C" __declspec(dllexport) int __cdecl sp_delegate_install(void *viewPointer) {
-    pinThisDll();
+    if (!pinThisDll())
+        return 0;
     return installAssetDelegate(static_cast<QAbstractItemView *>(viewPointer));
 }
 
 extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applicationPointer) {
-    pinThisDll();
+    if (!pinThisDll())
+        return 0;
     auto *application = static_cast<QApplication *>(applicationPointer);
     if (!application)
         application = qobject_cast<QApplication *>(QCoreApplication::instance());
@@ -970,7 +1308,7 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
     // official Chinese translation. The widget/model display layer below sees
     // Painter's final text and only fills strings that remain untranslated.
     if (!g_filter) {
-        g_filter = new NativeUiFilter(application);
+        g_filter = new TranslationUiFilter(application);
         application->installEventFilter(g_filter);
     }
     if (!g_fallbackTimer) {

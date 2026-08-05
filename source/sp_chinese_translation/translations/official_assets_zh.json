@@ -22,6 +22,7 @@
     "glsl_metadata": true
   },
   "translations": {
+    "NMid": "法线贴图反向细节",
     "-45°": "-45°",
     "0": "0",
     "0 deg": "0 deg",
@@ -6655,6 +6656,30 @@
     "watercolor_01": "水彩 01",
     "watercolor_02": "水彩 02",
     "wiggly_stroke": "波浪笔触",
-    "Wood01": "木材 01"
+    "Wood01": "木材 01",
+    "Passthrough": "穿透",
+    "Disable": "禁用",
+    "Replace": "替换",
+    "Divide": "除法",
+    "Inverse divide": "反向除法",
+    "Darken (Min)": "变暗（最小值）",
+    "Lighten (Max)": "变亮（最大值）",
+    "Linear dodge (Add)": "线性减淡（添加）",
+    "Inverse Subtract": "反向减去",
+    "Difference": "差值",
+    "Exclusion": "排除",
+    "Signed addition (AddSub)": "有符号相加（加减）",
+    "Linear burn": "线性加深",
+    "Color burn": "颜色加深",
+    "Color dodge": "颜色减淡",
+    "Hard light": "强光",
+    "Vivid light": "亮光",
+    "Linear light": "线性光",
+    "Pin light": "点光",
+    "Tint": "色调",
+    "Value": "值",
+    "Normal map combine": "法线贴图合并",
+    "Normal map detail": "法线贴图细节",
+    "Normal map inverse detail": "法线贴图反向细节"
   }
 }

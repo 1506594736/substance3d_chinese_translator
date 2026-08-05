@@ -32,7 +32,7 @@ endfunction()
 
 # Painter 10.1+ / Qt6. The Qt6 ABI remains compatible across the supported
 # minor versions used by current Painter releases.
-set(QT6_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/qt-sdk/6.5.3/msvc2019_64")
+set(QT6_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../qt-sdk/6.5.3/msvc2019_64")
 if(NOT EXISTS "${QT6_ROOT}/lib/Qt6Widgets.lib")
     message(FATAL_ERROR "Bundled Qt6 SDK is missing")
 endif()
@@ -41,7 +41,7 @@ add_painter_delegate(
 
 # Painter 7.2-10.0 / Qt5.12.5. This target is deliberately a separate DLL;
 # loading a Qt6-linked delegate into a Qt5 process is unsafe.
-set(QT5_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/qt-sdk/5.12.5/msvc2017_64")
+set(QT5_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../qt-sdk/5.12.5/msvc2017_64")
 if(NOT EXISTS "${QT5_ROOT}/lib/Qt5Widgets.lib")
     message(FATAL_ERROR "Bundled Qt5.12.5 SDK is missing")
 endif()

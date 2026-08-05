@@ -35,6 +35,6 @@ __pycache__/
 *.pyc
 
 # CMake build outputs
-source/c++/build/
-source/c++/build-import-libs/
+source/sp_chinese_translation/c++/build/
+source/sp_tools/c++/build/
 *.exp

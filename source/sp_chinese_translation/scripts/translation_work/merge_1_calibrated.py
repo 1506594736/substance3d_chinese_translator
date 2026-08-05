@@ -4,36 +4,16 @@ import re
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 INCOMING = Path(os.environ.get("SP_INCOMING", Path.home() / "Desktop/1.json"))
 OFFICIAL = ROOT / "source/sp_chinese_translation/translations/official_assets_zh.json"
-
-
-CORRECTIONS = {
-    "3d_gradient": "3D 渐变",
-    "Black Ops One": "Black Ops One 字体",
-    "Chathura": "Chathura 字体",
-    "Dancing Script": "Dancing Script 字体",
-    "hard surface": "硬表面",
-    "height_blend": "高度混合",
-    "Jura": "Jura 字体",
-    "Leaks - Paints": "渗漏 - 漆面",
-    "lens-studio": "Lens Studio 预设",
-    "metal": "金属度",
-    "Orbitron": "Orbitron 字体",
-    "Paint Roller": "油漆滚筒",
-    "scratches_generators": "划痕生成器",
-    "Sheen Color": "光泽颜色",
-    "Shimmering": "微光",
-    "Source Han": "思源字体",
-}
 
 
 def calibrated(source, target):
     match = re.fullmatch(r"Kyle Brush Presets\.alpha\.(\d+)", source)
     if match:
         return f"Kyle 笔刷预设 Alpha {match.group(1)}"
-    return CORRECTIONS.get(source, target.strip())
+    return target.strip()
 
 
 def main():

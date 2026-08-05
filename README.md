@@ -94,6 +94,7 @@
 
 - 递归扫描指定资源目录。
 - 从支持的资源容器中提取 XML 元数据词条。
+- 解析 `.spsm` 智能材质（HDF5）中的图层名（仅提取需要翻译的英文名）。
 - 提取 `label`、`text`、`group`、`description`、`category` 等字段。
 - 将 `label`、`label0`、`label1` 等统一作为 `label` 处理。
 - 提取 GLSL 元数据中的 `label`、`group`、`description`、`description_disabled` 和下拉框 `values`。
@@ -192,10 +193,10 @@ translations\official_assets_zh.json
 ```text
 sp_chinese_translation/
 ├─ __init__.py                         Python 插件入口和词条提取器
-├─ packages/
+├─ native/
 │  ├─ sp_translation_delegate_qt6.dll  Painter 10.1+ 的 Qt6 C++ 模块
-│  ├─ sp_translation_delegate_qt5.dll  Painter 7.2–10.0 的 Qt5 C++ 模块
-│  └─ ...                              资源容器解析所需的精简 Python 依赖
+│  └─ sp_translation_delegate_qt5.dll  Painter 7.2–10.0 的 Qt5 C++ 模块
+├─ packages/                           资源容器解析所需的精简 Python 依赖
 ├─ translations/
 │  ├─ official_assets_zh.json          默认中文词库
 │  ├─ control_types_zh.json             按控件类型隔离的专属词库
@@ -203,8 +204,8 @@ sp_chinese_translation/
 └─ THIRD_PARTY_LICENSES.txt              第三方依赖许可证（合并文件）
 ```
 
-`packages` 属于插件运行依赖，`THIRD_PARTY_LICENSES.txt` 是随附的第三方许可证文件，
-发布或安装完整功能版本时请保留。
+`native`（自编译 DLL）与 `packages`（第三方依赖）都属于插件运行依赖，
+`THIRD_PARTY_LICENSES.txt` 是随附的第三方许可证文件，发布或安装完整功能版本时请保留。
 
 ## 卸载
 
@@ -231,11 +232,15 @@ sp_chinese_translation/
 
 ## 仓库结构
 
-插件源码位于 `source/sp_chinese_translation/`，C++ 源码位于 `source/c++/`，
-工具脚本统一在 `scripts/`，发布包由 `scripts/build_package.py` 生成到
+两个插件源码各自独立：`source/sp_chinese_translation/`（含其 `c++/` 原生模块）
+与 `source/sp_tools/`（含其 `c++/` 原生模块）；`source/qt-sdk` 是两个插件
+共用的 Qt 构建工具链（非插件源码）。工具脚本在
+`source/sp_chinese_translation/scripts/`，发布包由
+`source/sp_chinese_translation/scripts/build_package.py` 生成到
 `dist/sp_chinese_translation.zip`。
-该脚本会先从 `source/c++/translation_ui_delegate.cpp` 重新编译 C++ 翻译模块；编译成功后才会打包，运行方式为：
+该脚本会先从 `source/sp_chinese_translation/c++/translation_ui_delegate.cpp`
+重新编译 C++ 翻译模块；编译成功后才会打包，运行方式为：
 
 ```text
-python scripts/build_package.py
+python source/sp_chinese_translation/scripts/build_package.py
 ```

@@ -4,11 +4,13 @@
 
 Layout:
     source/sp_chinese_translation/    canonical plugin source (single source of truth)
-    source/c++/                       C++ translation delegate and compact Qt SDK
+    source/sp_chinese_translation/c++/  C++ translation delegate source
+    source/sp_chinese_translation/scripts/  build/diagnostic/dictionary tools
+    source/qt-sdk                     shared Qt5/Qt6 SDK toolchain (not plugin code)
     dist/sp_chinese_translation.zip   generated release archive (zip root == plugin content)
 
 One-click build (run from the repository root):
-    python scripts/build_package.py
+    python source/sp_chinese_translation/scripts/build_package.py
 
 The command always compiles both ``sp_translation_delegate_qt6.dll`` and
 ``sp_translation_delegate_qt5.dll`` before creating the ZIP. A compile failure
@@ -16,7 +18,7 @@ stops packaging, so an old DLL can never be published accidentally.
 
 Requirements and notes:
     * Windows x64 with CMake and MSVC Build Tools / Visual Studio C++ tools.
-    * Keep both compact Qt5.12.5 and Qt6 SDKs under ``source/c++/qt-sdk``.
+* Keep both compact Qt5.12.5 and Qt6 SDKs under ``source/qt-sdk``.
     * Substance Painter must be closed only when installing/replacing the DLL;
       it does not need to be closed merely to build this archive.
     * The ZIP root is the plug-in content. Extract it directly into a folder
@@ -32,19 +34,22 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+# 发布包只包含运行所需文件；以下目录是开发/构建用，不进入 zip
+EXCLUDED_TOP_DIRS = {"scripts", "c++", "__pycache__"}
+
+ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "source" / "sp_chinese_translation"
 DIST = ROOT / "dist"
 OUT = DIST / "sp_chinese_translation.zip"
 README = ROOT / "README.md"
-CXX_SRC = ROOT / "source" / "c++"
+CXX_SRC = ROOT / "source" / "sp_chinese_translation" / "c++"
 CXX_BUILD = CXX_SRC / "build"
 DELEGATE_DLL = CXX_BUILD / "Release" / "sp_translation_delegate_qt6.dll"
 DELEGATE_QT5_DLL = CXX_BUILD / "Release" / "sp_translation_delegate_qt5.dll"
-PACKAGED_DELEGATE_DLL = SRC / "packages" / "sp_translation_delegate_qt6.dll"
-PACKAGED_DELEGATE_QT5_DLL = SRC / "packages" / "sp_translation_delegate_qt5.dll"
-LEGACY_NATIVE_DLL = SRC / "packages" / "sp_native_asset_delegate.dll"
-UNSUFFIXED_DELEGATE_DLL = SRC / "packages" / "sp_translation_delegate.dll"
+PACKAGED_DELEGATE_DLL = SRC / "native" / "sp_translation_delegate_qt6.dll"
+PACKAGED_DELEGATE_QT5_DLL = SRC / "native" / "sp_translation_delegate_qt5.dll"
+LEGACY_NATIVE_DLL = SRC / "native" / "sp_native_asset_delegate.dll"
+UNSUFFIXED_DELEGATE_DLL = SRC / "native" / "sp_translation_delegate.dll"
 
 def _check_required_files() -> None:
     required = [
@@ -53,12 +58,12 @@ def _check_required_files() -> None:
         README,
         CXX_SRC / "CMakeLists.txt",
         CXX_SRC / "translation_ui_delegate.cpp",
-        CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Core.lib",
-        CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Gui.lib",
-        CXX_SRC / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Widgets.lib",
-        CXX_SRC / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Core.lib",
-        CXX_SRC / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Gui.lib",
-        CXX_SRC / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Widgets.lib",
+    ROOT / "source" / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Core.lib",
+    ROOT / "source" / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Gui.lib",
+    ROOT / "source" / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Widgets.lib",
+    ROOT / "source" / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Core.lib",
+    ROOT / "source" / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Gui.lib",
+    ROOT / "source" / "qt-sdk" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Widgets.lib",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -146,14 +151,18 @@ def main() -> None:
         with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(pkg.rglob("*")):
                 if path.is_file():
-                    archive.write(path, path.relative_to(pkg).as_posix())
+                    relative = path.relative_to(pkg)
+                    if (relative.parts
+                            and relative.parts[0] in EXCLUDED_TOP_DIRS):
+                        continue
+                    archive.write(path, relative.as_posix())
                     file_count += 1
 
     with zipfile.ZipFile(OUT, "r") as archive:
         names = archive.namelist()
         required = {"__init__.py",
-                    "packages/sp_translation_delegate_qt5.dll",
-                    "packages/sp_translation_delegate_qt6.dll",
+                    "native/sp_translation_delegate_qt5.dll",
+                    "native/sp_translation_delegate_qt6.dll",
                     "translations/official_assets_zh.json", "README.md"}
         missing = required.difference(names)
         if missing:

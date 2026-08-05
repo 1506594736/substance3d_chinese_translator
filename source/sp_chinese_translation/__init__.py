@@ -6,14 +6,17 @@ Substance Painter 全控件通用 + 资源库汉化插件 (资源分类树 + 资
 PySide2 / Qt5 C++ 显示引擎。
 """
 
+import collections
 import ctypes
 import json
 import os
 import pathlib
 import re
+import struct
 import sys
 import tempfile
 import time
+import traceback
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -40,8 +43,9 @@ TRANSLATE_LAYERS_PANEL = True
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
 PACKAGES_DIR = os.path.join(PLUGIN_DIR, "packages")
+NATIVE_DIR = os.path.join(PLUGIN_DIR, "native")
 DELEGATE_DLL_PATH = os.path.join(
-    PACKAGES_DIR,
+    NATIVE_DIR,
     "sp_translation_delegate_qt5.dll" if QT_MAJOR == 5
     else "sp_translation_delegate_qt6.dll",
 )
@@ -267,6 +271,19 @@ def _load_archive_modules():
         import py7zr
     except (ImportError, OSError):
         py7zr = None
+    if py7zr is not None:
+        try:
+            # 路径安全已由 _safe_archive_names 把关；py7zr 的 resolve() 路径
+            # 校验在 Painter 运行时会对个别文件误判（Bad7zFile:
+            # "Specified path is bad"），这里放行 resolve 比较、保留 .. 检查。
+            import py7zr.helpers as _py7zr_helpers
+            if not getattr(_py7zr_helpers, "_sp_lenient_path_check", False):
+                _py7zr_helpers.is_relative_to = (
+                    lambda *args, **kwargs: True
+                )
+                _py7zr_helpers._sp_lenient_path_check = True
+        except Exception:
+            pass
     try:
         import h5py
     except (ImportError, OSError):
@@ -342,6 +359,65 @@ def _parse_asset_xml(path, attributes):
 
 def _contains_han(text):
     return any("\u3400" <= char <= "\u9fff" for char in str(text))
+
+
+def _parse_len_prefixed_strings(data):
+    """解析 Alg 序列化中常见的“4 字节长度 + UTF-8”字符串序列。"""
+    items = []
+    index = 0
+    size = len(data)
+    while index + 4 <= size:
+        length = struct.unpack_from("<I", data, index)[0]
+        if 0 < length < 500 and index + 4 + length <= size:
+            try:
+                text = data[index + 4:index + 4 + length].decode("utf-8")
+                if text and all(char.isprintable() or char in "\r\n\t"
+                                for char in text):
+                    items.append(text)
+                    index += 4 + length
+                    continue
+            except Exception:
+                pass
+        index += 1
+    return items
+
+
+def _parse_spsm_layer_names(path):
+    """从 .spsm（HDF5 智能材质）的 preset.bin 中解析需要翻译的图层名。
+
+    Painter 把智能材质的图层结构序列化在 preset.bin 里，图层名以
+    “4 字节长度 + UTF-8”字符串存放。字段名通常重复出现；图层名一般唯一，
+    且多为“含空格”或“标题式单词”。已含中文的图层名无需翻译，跳过。
+    """
+    items = set()
+    try:
+        _py7zr, h5py = _load_archive_modules()
+        if h5py is None or not h5py.is_hdf5(path):
+            return items
+        with h5py.File(path, "r") as archive:
+            if "preset.bin" not in archive:
+                return items
+            try:
+                raw = bytes(archive["preset.bin"][()])
+            except Exception:
+                return items
+        strings = _parse_len_prefixed_strings(raw)
+        counts = collections.Counter(strings)
+        for text in strings:
+            if counts[text] != 1:
+                continue  # 字段名通常重复出现，排除
+            text = text.strip()
+            if len(text) < 2 or len(text) > 80:
+                continue
+            if text.startswith(("Data", "GUI")) or "://" in text:
+                continue
+            if _contains_han(text):
+                continue  # 已是中文，无需翻译
+            if " " in text or re.fullmatch(r"[A-Z][A-Za-z]+", text):
+                items.add(text)
+    except Exception:
+        pass
+    return items
 
 
 def _parse_glsl_metadata(path, attributes):
@@ -489,7 +565,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.group_check = QtWidgets.QCheckBox("提取 group")
         self.group_check.setChecked(True)
         self.description_check = QtWidgets.QCheckBox("提取 description")
-        self.description_check.setChecked(True)
+        self.description_check.setChecked(False)
         self.category_check = QtWidgets.QCheckBox("提取 category")
         self.category_check.setChecked(True)
         self.keywords_check = QtWidgets.QCheckBox("提取 keywords（可能影响搜索）")
@@ -499,7 +575,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.disabled_description_check = QtWidgets.QCheckBox(
             "提取禁用说明 description_disabled"
         )
-        self.disabled_description_check.setChecked(True)
+        self.disabled_description_check.setChecked(False)
         attribute_row.addWidget(self.label_check)
         attribute_row.addWidget(self.text_check)
         attribute_row.addWidget(self.group_check)
@@ -833,7 +909,13 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         raise ValueError("不是受支持的 7z/ZIP/HDF5 容器")
 
     def _expand_nested_archives(self, root):
-        queue = [(path, 1) for path in pathlib.Path(root).rglob("*") if path.is_file()]
+        queue = []
+        for path in pathlib.Path(root).rglob("*"):
+            try:
+                if path.is_file():
+                    queue.append((path, 1))
+            except Exception:
+                continue
         expanded = 0
         serial = 0
         while queue:
@@ -852,8 +934,12 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 destination.mkdir(parents=True, exist_ok=True)
                 self._extract_archive(path, destination)
                 expanded += 1
-                queue.extend((child, depth + 1) for child in destination.rglob("*")
-                             if child.is_file())
+                try:
+                    children = [child for child in destination.rglob("*")
+                                if child.is_file()]
+                except Exception:
+                    children = []
+                queue.extend((child, depth + 1) for child in children)
             except Exception:
                 continue
         return expanded
@@ -886,14 +972,31 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                          or self._include_file_names)):
                 self._items.add(file_name)
             if is_container:
+                layer_names = set()
                 with tempfile.TemporaryDirectory(prefix="sp_label_extract_") as temporary:
                     archive_type = self._extract_archive(asset_path, temporary)
                     nested_count = self._expand_nested_archives(temporary)
                     xml_count = 0
                     for xml_path in pathlib.Path(temporary).rglob("*.xml"):
                         xml_count += 1
-                        self._items.update(_parse_asset_xml(xml_path, self._attributes))
-                detail = f"{archive_type}, 嵌套包 {nested_count}, XML {xml_count}"
+                        try:
+                            self._items.update(
+                                _parse_asset_xml(xml_path, self._attributes)
+                            )
+                        except Exception as sub_exc:
+                            try:
+                                sub = str(xml_path.relative_to(temporary))
+                            except Exception:
+                                sub = str(xml_path)
+                            self._failed.append(
+                                (f"{relative} :: {sub}", str(sub_exc),
+                                 traceback.format_exc())
+                            )
+                    if archive_type == "hdf5":
+                        layer_names = _parse_spsm_layer_names(asset_path)
+                        self._items.update(layer_names)
+                detail = (f"{archive_type}, 嵌套包 {nested_count}, "
+                          f"XML {xml_count}, 图层名 {len(layer_names)}")
             else:
                 glsl_extensions = {
                     ".glsl", ".glslfx", ".vert", ".frag", ".geom",
@@ -912,7 +1015,9 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 f"成功  {relative}  [{detail}, 新增 {added}]"
             )
         except Exception as exc:
-            self._failed.append((relative, str(exc)))
+            self._failed.append(
+                (relative, str(exc), traceback.format_exc())
+            )
             self.log.appendPlainText(f"失败  {relative}  [{exc}]")
 
         self._index += 1
@@ -971,10 +1076,29 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         }
         try:
             _write_json_atomic(self._output, payload)
+            failure_log = ""
+            if self._failed:
+                failure_log = os.path.splitext(self._output)[0] + "_failures.txt"
+                try:
+                    with open(failure_log, "w", encoding="utf-8") as stream:
+                        for item in self._failed:
+                            if len(item) >= 3:
+                                relative, error, trace = item
+                                stream.write(
+                                    f"{relative}\t{error}\n{trace}\n\n"
+                                )
+                            else:
+                                relative, error = item
+                                stream.write(f"{relative}\t{error}\n")
+                except Exception as exc:
+                    failure_log = ""
+                    print(">>> 写失败日志出错:", exc)
             self.status_label.setText(
                 f"完成：{len(self._items)} 条词条，{len(self._failed)} 个失败"
             )
             self.log.appendPlainText(f"\n已写入: {self._output}")
+            if failure_log:
+                self.log.appendPlainText(f"失败日志: {failure_log}")
         except Exception as exc:
             self.status_label.setText("写入失败")
             QtWidgets.QMessageBox.critical(self, "写入失败", str(exc))

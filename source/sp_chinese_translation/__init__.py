@@ -274,7 +274,13 @@ def _install_native_ui(app):
 # ==========================================
 # 3. Translation label extractor UI
 # ==========================================
+_ARCHIVE_MODULES = None
+
+
 def _load_archive_modules():
+    global _ARCHIVE_MODULES
+    if _ARCHIVE_MODULES is not None:
+        return _ARCHIVE_MODULES
     packages_dir = os.path.join(PLUGIN_DIR, "packages")
     if packages_dir not in sys.path:
         sys.path.insert(0, packages_dir)
@@ -283,7 +289,7 @@ def _load_archive_modules():
         sys.path.insert(0, pure_python_zip)
     try:
         import py7zr
-    except (ImportError, OSError):
+    except Exception:
         py7zr = None
     if py7zr is not None:
         try:
@@ -300,9 +306,10 @@ def _load_archive_modules():
             pass
     try:
         import h5py
-    except (ImportError, OSError):
+    except Exception:
         h5py = None
-    return py7zr, h5py
+    _ARCHIVE_MODULES = (py7zr, h5py)
+    return _ARCHIVE_MODULES
 
 
 def _is_supported_container(path, py7zr, h5py):

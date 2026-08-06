@@ -82,6 +82,14 @@ def _validate_sources() -> None:
     # when this script itself is run by the current Python 3.11 toolchain.
     ast.parse(plugin_text, filename=str(plugin_source), feature_version=(3, 7))
 
+    vendor_zip = SRC / "packages" / "python.zip"
+    with zipfile.ZipFile(vendor_zip) as archive:
+        for name in archive.namelist():
+            if not name.endswith(".py"):
+                continue
+            source = archive.read(name).decode("utf-8-sig")
+            ast.parse(source, filename=name, feature_version=(3, 7))
+
     dictionary_path = SRC / "translations" / "official_assets_zh.json"
     payload = json.loads(dictionary_path.read_text(encoding="utf-8-sig"))
     if payload.get("$schema") != "sp-translation-v1":

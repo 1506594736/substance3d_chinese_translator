@@ -37,8 +37,7 @@ __pycache__/
 *.pyc
 
 # CMake build outputs
-source/sp_chinese_translation/c++/build/
-source/sp_chinese_translation/extractor/build/
+source/sp_chinese_translation/cpp/build/
 build_tools/
 .extractor_test/
 source/sp_tools/c++/build/

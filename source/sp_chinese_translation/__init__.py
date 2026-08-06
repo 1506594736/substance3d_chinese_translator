@@ -6,22 +6,16 @@ Substance Painter 全控件通用 + 资源库汉化插件 (资源分类树 + 资
 PySide2 / Qt5 C++ 显示引擎。
 """
 
-import collections
 import ctypes
 import json
 import os
-import pathlib
 import re
 import shutil
-import struct
-import sys
 import tempfile
 import threading
 import time
-import traceback
 import urllib.request
 import zipfile
-import xml.etree.ElementTree as ET
 
 import substance_painter as sp
 try:
@@ -56,7 +50,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "sp_translation_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "2.0.2"
+PLUGIN_VERSION = "3.0.0"
 PLUGIN_REPO = "iillya/sp_chinese_translation"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -267,77 +261,6 @@ def _install_native_ui(app):
         return False
 
 
-# ==========================================
-# 3. Translation label extractor UI
-# ==========================================
-_ARCHIVE_MODULES = None
-
-
-def _load_archive_modules():
-    global _ARCHIVE_MODULES
-    if _ARCHIVE_MODULES is not None:
-        return _ARCHIVE_MODULES
-    packages_dir = os.path.join(PLUGIN_DIR, "packages")
-    if packages_dir not in sys.path:
-        sys.path.insert(0, packages_dir)
-    # Painter 7.2/2021 embeds Python 3.7, while current Painter uses Python
-    # 3.11. Extension modules are ABI-specific, so keep the legacy HDF5 stack
-    # isolated and select it before importing NumPy/h5py.
-    if sys.version_info[:2] == (3, 7):
-        legacy_packages_dir = os.path.join(packages_dir, "py37")
-        if (os.path.isdir(legacy_packages_dir)
-                and legacy_packages_dir not in sys.path):
-            sys.path.insert(0, legacy_packages_dir)
-    pure_python_zip = os.path.join(packages_dir, "python.zip")
-    if os.path.isfile(pure_python_zip) and pure_python_zip not in sys.path:
-        sys.path.insert(0, pure_python_zip)
-    try:
-        import py7zr
-    except Exception:
-        py7zr = None
-    if py7zr is not None:
-        try:
-            # 路径安全已由 _safe_archive_names 把关。py7zr 的 resolve() 路径
-            # 校验在 Painter 运行时会对个别文件误判（Bad7zFile:
-            # "Specified path is bad"），这里放行 resolve 比较、保留 .. 检查。
-            import py7zr.helpers as _py7zr_helpers
-            if not getattr(_py7zr_helpers, "_sp_lenient_path_check", False):
-                _py7zr_helpers.is_relative_to = (
-                    lambda *args, **kwargs: True
-                )
-                _py7zr_helpers._sp_lenient_path_check = True
-        except Exception:
-            pass
-    try:
-        import h5py
-    except Exception:
-        h5py = None
-    _ARCHIVE_MODULES = (py7zr, h5py)
-    return _ARCHIVE_MODULES
-
-
-def _is_supported_container(path, py7zr, h5py):
-    """Probe formats without requiring version-specific binary modules."""
-    return ((py7zr is not None and py7zr.is_7zfile(path))
-            or zipfile.is_zipfile(path)
-            or (h5py is not None and h5py.is_hdf5(path)))
-
-
-def _safe_archive_names(names):
-    names = list(names)
-    if len(names) > MAX_ARCHIVE_MEMBERS:
-        raise ValueError(f"容器条目过多: {len(names)}")
-    for name in names:
-        path = pathlib.PurePosixPath(str(name).replace("\\", "/"))
-        if path.is_absolute() or ".." in path.parts:
-            raise ValueError(f"资产包含不安全路径: {name}")
-
-
-def _archive_entry_is_link(entry):
-    value = getattr(entry, "is_symlink", False)
-    return bool(value() if callable(value) else value)
-
-
 def _write_json_atomic(path, payload):
     """Write UTF-8 JSON without leaving a partial destination on failure."""
     destination = os.path.abspath(path)
@@ -359,52 +282,6 @@ def _write_json_atomic(path, payload):
         except OSError:
             pass
         raise
-
-
-def _parse_asset_xml(path, attributes):
-    items = set()
-    selected = set(attributes)
-    try:
-        content = path.read_text(encoding="utf-8", errors="ignore")
-        content = re.sub(r"<!DOCTYPE[^>]*>", "", content)
-        root = ET.fromstring(content)
-        for element in root.iter():
-            for attribute, raw_value in element.attrib.items():
-                # One "label" option covers label, label0, label1, label2, ...
-                is_selected_label = "label" in selected and re.fullmatch(r"label\d*", attribute)
-                if attribute not in selected and not is_selected_label:
-                    continue
-                value = raw_value.strip()
-                if value and not _contains_han(value):
-                    items.add(value)
-                    # Painter treats an unspaced slash in a group path as a
-                    # hierarchy separator, but only stores the complete path
-                    # in the SBSAR metadata (for example
-                    # ``Yarn Twist/Weft Twist``).  The UI displays each path
-                    # component separately, so extract those visible labels
-                    # as well.  A spaced slash, such as ``Leno / Gauze``, is
-                    # part of one label and must remain intact.
-                    is_group_path = (
-                        attribute == "group"
-                        or (attribute == "label"
-                            and str(element.tag).rsplit("}", 1)[-1]
-                            == "guigroup")
-                    )
-                    # Do not mistake weave ratios such as ``Satin 7/1`` or
-                    # ``Twill 1/3`` for hierarchy separators.
-                    group_separator = r"(?<![\s\d])/(?![\s\d])"
-                    if is_group_path and re.search(group_separator, value):
-                        items.update(
-                            component.strip()
-                            for component in re.split(
-                                group_separator, value
-                            )
-                            if component.strip()
-                            and not _contains_han(component)
-                        )
-    except Exception:
-        raise
-    return items
 
 
 def _contains_han(text):
@@ -437,152 +314,6 @@ def _is_extractable_source(text):
     )
 
 
-def _parse_len_prefixed_strings(data):
-    """解析 Alg 序列化中常见的“4 字节长度 + UTF-8”字符串序列。"""
-    items = []
-    index = 0
-    size = len(data)
-    while index + 4 <= size:
-        length = struct.unpack_from("<I", data, index)[0]
-        if 0 < length < 500 and index + 4 + length <= size:
-            try:
-                text = data[index + 4:index + 4 + length].decode("utf-8")
-                if text and all(char.isprintable() or char in "\r\n\t"
-                                for char in text):
-                    items.append(text)
-                    index += 4 + length
-                    continue
-            except Exception:
-                pass
-        index += 1
-    return items
-
-
-def _parse_spsm_layer_names(path):
-    """从 .spsm（HDF5 智能材质）的 preset.bin 中解析需要翻译的图层名。
-
-    Painter 把智能材质的图层结构序列化在 preset.bin 里，图层名以
-    “4 字节长度 + UTF-8”字符串存放。字段名通常重复出现。图层名一般唯一，
-    且多为“含空格”或“标题式单词”。已含中文的图层名无需翻译，跳过。
-    """
-    items = set()
-    try:
-        _py7zr, h5py = _load_archive_modules()
-        if h5py is None or not h5py.is_hdf5(path):
-            return items
-        with h5py.File(path, "r") as archive:
-            if "preset.bin" not in archive:
-                return items
-            try:
-                raw = bytes(archive["preset.bin"][()])
-            except Exception:
-                return items
-        strings = _parse_len_prefixed_strings(raw)
-        counts = collections.Counter(strings)
-        for text in strings:
-            if counts[text] != 1:
-                continue  # 字段名通常重复出现，排除
-            text = text.strip()
-            if len(text) < 2 or len(text) > 80:
-                continue
-            if text.startswith(("Data", "GUI")) or "://" in text:
-                continue
-            if _contains_han(text):
-                continue  # 已是中文，无需翻译
-            if " " in text or re.fullmatch(r"[A-Z][A-Za-z]+", text):
-                items.add(text)
-    except Exception:
-        pass
-    return items
-
-
-def _iter_xml_metadata_files(root):
-    """Yield XML metadata by content, including extensionless SBSAR entries."""
-    for path in pathlib.Path(root).rglob("*"):
-        try:
-            if not path.is_file():
-                continue
-            if path.suffix.lower() == ".xml":
-                yield path
-                continue
-            # Substance archives sometimes store XML metadata under a hash or
-            # an extensionless dataset name.  A small prefix is enough to
-            # recognize it without loading large textures into memory.
-            with path.open("rb") as stream:
-                prefix = stream.read(4096).lstrip(b"\xef\xbb\xbf\x00\t\r\n ")
-            if prefix.startswith(b"<?xml") or prefix.startswith(b"<"):
-                yield path
-        except OSError:
-            continue
-
-
-def _parse_glsl_metadata(path, attributes):
-    """Extract user-facing strings from Painter GLSL JSON annotations."""
-    selected = set(attributes)
-    items = set()
-    content = path.read_text(encoding="utf-8-sig", errors="ignore")
-
-    def collect(value, depth=0):
-        if depth > 64:
-            return
-        if isinstance(value, dict):
-            for key, child in value.items():
-                key = str(key)
-                is_label = "label" in selected and re.fullmatch(r"label\d*", key)
-                if isinstance(child, str) and (key in selected or is_label):
-                    clean = child.strip()
-                    if clean and not _contains_han(clean):
-                        items.add(clean)
-                elif key == "values" and "values" in selected and isinstance(child, dict):
-                    # Combobox captions are the keys; their values are shader constants.
-                    for caption in child:
-                        clean = str(caption).strip()
-                        if clean and not _contains_han(clean):
-                            items.add(clean)
-                else:
-                    collect(child, depth + 1)
-        elif isinstance(value, list):
-            for child in value:
-                collect(child, depth + 1)
-
-    # Join the //: payloads first: Painter commonly formats one JSON annotation
-    # over several comment lines. raw_decode also handles top-level arrays used
-    # by the `materials` directive.
-    annotation = "\n".join(
-        line[line.find("//:") + 3:].strip()
-        for line in content.splitlines() if "//:" in line
-    )
-    # Bound the amount of annotation text parsed in one pass; a malformed or
-    # oversized GLSL file must not stall extraction for minutes.
-    if len(annotation) <= 4 * 1024 * 1024:
-        decoder = json.JSONDecoder()
-        cursor = 0
-        while cursor < len(annotation):
-            starts = [position for position in (
-                annotation.find("{", cursor), annotation.find("[", cursor)
-            ) if position >= 0]
-            if not starts:
-                break
-            start = min(starts)
-            try:
-                value, end = decoder.raw_decode(annotation, start)
-                collect(value)
-                cursor = end
-            except ValueError:
-                cursor = start + 1
-
-    # Also support common display-name annotations used by imported GLSL.
-    if "label" in selected:
-        for match in re.finditer(
-            r"(?:DisplayName|displayName|ui_name)\s*\(\s*[\"']([^\"']+)[\"']\s*\)",
-            content,
-        ):
-            clean = match.group(1).strip()
-            if clean and not _contains_han(clean):
-                items.add(clean)
-    return items
-
-
 class ChineseTranslationToolDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -591,10 +322,6 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.setMinimumSize(780, 640)
         self.setSizeGripEnabled(True)
         self.setAttribute(WA_DELETE_ON_CLOSE, False)
-        self._files = []
-        self._index = 0
-        self._items = set()
-        self._failed = []
         self._cancelled = False
         self._extractor_process = None
         self._extractor_request = ""
@@ -1068,6 +795,11 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                     f"失败  {message.get('file', '')}  "
                     f"[{message.get('message', '')}]"
                 )
+            elif message_type == "success":
+                added = int(message.get("terms", 0))
+                self.log.appendPlainText(
+                    f"成功  {message.get('file', '')}  [新增 {added} 条]"
+                )
             elif message_type == "finished":
                 self.status_label.setText(
                     f"完成：新增 {message.get('terms', 0)} 条，"
@@ -1113,257 +845,6 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         process = self._extractor_process
         if is_safe(process):
             self.log.appendPlainText(process.errorString())
-
-    def _extract_archive(self, asset_path, destination):
-        py7zr, h5py = _load_archive_modules()
-        if py7zr is not None and py7zr.is_7zfile(asset_path):
-            with py7zr.SevenZipFile(asset_path, mode="r") as archive:
-                entries = archive.list()
-                _safe_archive_names(entry.filename for entry in entries)
-                if any(_archive_entry_is_link(entry) for entry in entries):
-                    raise ValueError("容器包含不允许的符号链接")
-                archive.extractall(path=destination)
-            return "7z"
-        if zipfile.is_zipfile(asset_path):
-            with zipfile.ZipFile(asset_path, mode="r") as archive:
-                entries = archive.infolist()
-                _safe_archive_names(entry.filename for entry in entries)
-                if any((entry.external_attr >> 16) & 0o170000 == 0o120000
-                       for entry in entries):
-                    raise ValueError("容器包含不允许的符号链接")
-                archive.extractall(path=destination)
-            return "zip"
-        if h5py is not None and h5py.is_hdf5(asset_path):
-            with h5py.File(asset_path, mode="r") as archive:
-                dataset_names = []
-
-                def _record_dataset(name, obj):
-                    if isinstance(obj, h5py.Dataset):
-                        dataset_names.append(name)
-
-                archive.visititems(
-                    _record_dataset
-                )
-                _safe_archive_names(dataset_names)
-                for name in dataset_names:
-                    dataset = archive[name]
-                    value = dataset[()]
-                    if isinstance(value, bytes):
-                        data = value
-                    elif hasattr(value, "tobytes"):
-                        data = value.tobytes()
-                    else:
-                        data = bytes(value)
-                    output_path = pathlib.Path(destination, *pathlib.PurePosixPath(name).parts)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_bytes(data)
-            return "hdf5"
-        raise ValueError("不是受支持的 7z/ZIP/HDF5 容器")
-
-    def _expand_nested_archives(self, root):
-        queue = []
-        for path in pathlib.Path(root).rglob("*"):
-            try:
-                if path.is_file():
-                    queue.append((path, 1))
-            except Exception:
-                continue
-        expanded = 0
-        serial = 0
-        while queue:
-            path, depth = queue.pop(0)
-            if depth > 3 or path.suffix.lower() == ".xml":
-                continue
-            try:
-                py7zr, h5py = _load_archive_modules()
-                is_container = _is_supported_container(path, py7zr, h5py)
-                if not is_container:
-                    continue
-                if expanded >= MAX_NESTED_ARCHIVES:
-                    raise ValueError("嵌套容器超过 128 个安全上限")
-                serial += 1
-                destination = pathlib.Path(root) / f"_nested_{serial}"
-                destination.mkdir(parents=True, exist_ok=True)
-                self._extract_archive(path, destination)
-                expanded += 1
-                try:
-                    children = [child for child in destination.rglob("*")
-                                if child.is_file()]
-                except Exception:
-                    children = []
-                queue.extend((child, depth + 1) for child in children)
-            except Exception as exc:
-                try:
-                    nested_name = str(path.relative_to(root))
-                except Exception:
-                    nested_name = str(path)
-                self._failed.append(
-                    (f"嵌套容器 :: {nested_name}", str(exc),
-                     traceback.format_exc())
-                )
-        return expanded
-
-    def _process_next(self):
-        if self._cancelled:
-            self._finish(cancelled=True)
-            return
-        if self._index >= len(self._files):
-            self._finish(cancelled=False)
-            return
-
-        asset_path = self._files[self._index]
-        relative = os.path.relpath(asset_path, self._source_folder)
-        before = len(self._items)
-        self.status_label.setText(f"[{self._index + 1}/{len(self._files)}] {relative}")
-        try:
-            py7zr, h5py = _load_archive_modules()
-            is_container = _is_supported_container(asset_path, py7zr, h5py)
-            # Container names are always visible asset names and are therefore
-            # mandatory. The option only controls ordinary file names.
-            suffix = pathlib.Path(asset_path).suffix.lower()
-            known_container_name = suffix in {
-                ".sbsar", ".spsm", ".sppr", ".spp", ".sbsprs", ".sbsasm",
-                ".zip", ".7z",
-            }
-            file_name = pathlib.Path(asset_path).stem.strip()
-            if (file_name and not _contains_han(file_name)
-                    and (is_container or known_container_name
-                         or self._include_file_names)):
-                self._items.add(file_name)
-            if is_container:
-                layer_names = set()
-                with tempfile.TemporaryDirectory(prefix="sp_label_extract_") as temporary:
-                    archive_type = self._extract_archive(asset_path, temporary)
-                    nested_count = self._expand_nested_archives(temporary)
-                    xml_count = 0
-                    for xml_path in _iter_xml_metadata_files(temporary):
-                        xml_count += 1
-                        try:
-                            self._items.update(
-                                _parse_asset_xml(xml_path, self._attributes)
-                            )
-                        except Exception as sub_exc:
-                            try:
-                                sub = str(xml_path.relative_to(temporary))
-                            except Exception:
-                                sub = str(xml_path)
-                            self._failed.append(
-                                (f"{relative} :: {sub}", str(sub_exc),
-                                 traceback.format_exc())
-                            )
-                    if archive_type == "hdf5":
-                        if suffix != ".sppr":
-                            layer_names = _parse_spsm_layer_names(asset_path)
-                        self._items.update(layer_names)
-                detail = (f"{archive_type}, 嵌套包 {nested_count}, "
-                          f"XML {xml_count}, 图层名 {len(layer_names)}")
-            else:
-                glsl_extensions = {
-                    ".glsl", ".glslfx", ".vert", ".frag", ".geom",
-                    ".tesc", ".tese", ".comp",
-                }
-                if suffix in glsl_extensions:
-                    glsl_items = _parse_glsl_metadata(
-                        pathlib.Path(asset_path), self._attributes
-                    )
-                    self._items.update(glsl_items)
-                    detail = f"GLSL 元数据 {len(glsl_items)} 条"
-                else:
-                    detail = f"普通文件 {suffix or '[无扩展名]'}"
-            added = len(self._items) - before
-            self.log.appendPlainText(
-                f"成功  {relative}  [{detail}, 新增 {added}]"
-            )
-        except Exception as exc:
-            self._failed.append(
-                (relative, str(exc), traceback.format_exc())
-            )
-            self.log.appendPlainText(f"失败  {relative}  [{exc}]")
-
-        self._index += 1
-        self.progress.setValue(self._index)
-        self._step_timer.start(0)
-
-    def _load_existing_translations(self):
-        if not os.path.isfile(self._output):
-            return {}
-        try:
-            with open(self._output, "r", encoding="utf-8-sig") as stream:
-                payload = json.load(stream)
-            if payload.get("$schema") == "sp-translation-v1" and isinstance(payload.get("translations"), dict):
-                return {key: value for key, value in payload["translations"].items()
-                        if isinstance(key, str) and isinstance(value, str)}
-        except Exception:
-            pass
-        return {}
-
-    def _finish(self, cancelled):
-        self._set_running(False)
-        if cancelled:
-            self.status_label.setText("已取消，没有写入输出文件。")
-            return
-
-        # Existing output belongs to the user and must retain its translations,
-        # even after the same source is added to a loaded plugin dictionary.
-        # Dictionary deduplication applies only to newly discovered terms.
-        translations = {
-            source: target
-            for source, target in self._load_existing_translations().items()
-            if _is_valid_translation_source(source)
-        }
-        self._items = {
-            source for source in self._items
-            if _is_extractable_source(source)
-        }
-        for source in self._items:
-            translations.setdefault(source, "")
-        payload = {
-            "$schema": "sp-translation-v1",
-            "id": self.package_id_edit.text().strip(),
-            "language": "zh-CN",
-            "description": self.description_edit.text().strip(),
-            "extraction": {
-                "asset_count": len(self._files),
-                "failed_count": len(self._failed),
-                "term_count": len(translations),
-                "attributes": list(self._attributes),
-                "ordinary_filenames": self._include_file_names,
-                "container_filenames": True,
-                "folder_names": self._include_folder_names,
-                "glsl_metadata": True,
-            },
-            "translations": dict(sorted(translations.items(), key=lambda item: item[0].casefold())),
-        }
-        try:
-            _write_json_atomic(self._output, payload)
-            failure_log = ""
-            if self._failed:
-                failure_log = os.path.splitext(self._output)[0] + "_failures.txt"
-                try:
-                    with open(failure_log, "w", encoding="utf-8") as stream:
-                        for item in self._failed:
-                            if len(item) >= 3:
-                                relative, error, trace = item
-                                stream.write(
-                                    f"{relative}\t{error}\n{trace}\n\n"
-                                )
-                            else:
-                                relative, error = item
-                                stream.write(f"{relative}\t{error}\n")
-                except Exception as exc:
-                    failure_log = ""
-                    print(">>> 写失败日志出错:", exc)
-            self.status_label.setText(
-                f"完成：共 {len(translations)} 条词条，"
-                f"本次新增 {len(self._items)} 条，"
-                f"{len(self._failed)} 个失败"
-            )
-            self.log.appendPlainText(f"\n已写入: {self._output}")
-            if failure_log:
-                self.log.appendPlainText(f"失败日志: {failure_log}")
-        except Exception as exc:
-            self.status_label.setText("写入失败")
-            QtWidgets.QMessageBox.critical(self, "写入失败", str(exc))
 
     def _cancel(self):
         self._cancelled = True
@@ -1593,6 +1074,20 @@ def _check_updates(parent=None):
     """Check GitHub for a newer release and download it when available."""
     if parent is None:
         parent = QtWidgets.QApplication.activeWindow()
+    # Replacing the plug-in while an extraction is running would fail on the
+    # locked extractor EXE. Ask the user to finish or cancel the extraction
+    # first instead of letting the update fail and roll back mid-way.
+    tool_dialog = (
+        _label_extractor_dialog if is_safe(_label_extractor_dialog) else parent
+    )
+    if (is_safe(tool_dialog)
+            and getattr(tool_dialog, "_extractor_process", None) is not None):
+        QtWidgets.QMessageBox.warning(
+            parent,
+            "正在提取词条",
+            "当前正在进行词条提取，请先等待提取完成或点击“取消”后再检查更新。",
+        )
+        return
     try:
         QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
         try:
@@ -1705,18 +1200,20 @@ def _check_updates(parent=None):
 
 
 def _copy_file_safely(source, target):
-    """Copy ``source`` to ``target``, working around a locked native DLL.
+    """Copy ``source`` to ``target``, working around a locked native binary.
 
-    A DLL mapped into Painter cannot be overwritten, but Windows allows it to
-    be renamed, so the old file is moved aside and the new one is written
-    under the original name. The running session keeps using the old image in
+    A DLL mapped into Painter (or the standalone extractor EXE while an
+    extraction is running) cannot be overwritten, but Windows allows it to be
+    renamed, so the old file is moved aside and the new one is written under
+    the original name. The running session keeps using the old image in
     memory; the new file is loaded at the next start.
     """
     try:
         shutil.copy2(source, target)
         return
     except PermissionError:
-        if not target.lower().endswith(".dll"):
+        lowered = target.lower()
+        if not (lowered.endswith(".dll") or lowered.endswith(".exe")):
             raise
         moved = target + ".old"
         if os.path.isfile(moved):
@@ -1743,13 +1240,14 @@ def _copytree_merge(source, target):
             _copy_file_safely(src, dst)
 
 
-def _cleanup_pending_dll_files():
-    """Remove native DLLs renamed aside by a previous live update."""
+def _cleanup_pending_native_files():
+    """Remove native DLLs/EXEs renamed aside by a previous live update."""
     try:
         if not os.path.isdir(NATIVE_DIR):
             return
         for name in os.listdir(NATIVE_DIR):
-            if name.lower().endswith(".dll.old"):
+            lowered = name.lower()
+            if lowered.endswith(".dll.old") or lowered.endswith(".exe.old"):
                 try:
                     os.remove(os.path.join(NATIVE_DIR, name))
                 except OSError:
@@ -1784,6 +1282,25 @@ def _apply_update_now(zip_path, parent=None):
     try:
         stage_dir = tempfile.mkdtemp(prefix="sp_update_stage_")
         with zipfile.ZipFile(zip_path) as archive:
+            # Reject path traversal and symlinks before anything is written:
+            # a tampered update package must never escape the staging folder.
+            for info in archive.infolist():
+                raw_name = info.filename.replace("\\", "/")
+                parts = [part for part in raw_name.split("/")
+                         if part not in ("", ".")]
+                unsafe = (
+                    raw_name.startswith("/")
+                    or any(part == ".." for part in parts)
+                    or (len(raw_name) >= 2 and raw_name[1] == ":")
+                )
+                if unsafe:
+                    raise RuntimeError(
+                        f"更新包包含不安全路径: {info.filename}"
+                    )
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise RuntimeError(
+                        f"更新包包含符号链接: {info.filename}"
+                    )
             archive.extractall(stage_dir)
         if not os.path.isfile(os.path.join(stage_dir, "__init__.py")):
             raise RuntimeError("更新包缺少 __init__.py，已中止更新。")
@@ -1836,7 +1353,9 @@ def _apply_update_now(zip_path, parent=None):
             try:
                 os.remove(os.path.join(root, name))
             except PermissionError:
-                if not name.lower().endswith(".dll.old"):
+                lowered = name.lower()
+                if not (lowered.endswith(".dll.old")
+                        or lowered.endswith(".exe.old")):
                     raise
             except OSError:
                 pass
@@ -2075,8 +1594,8 @@ def start_plugin():
         "sp_chinese_translation/translate_layers_panel", True
     )
 
-    # Remove native DLLs renamed aside by a previous in-place update.
-    _cleanup_pending_dll_files()
+    # Remove native DLLs/EXEs renamed aside by a previous in-place update.
+    _cleanup_pending_native_files()
 
     phase_started = time.perf_counter()
     load_translation_packages()

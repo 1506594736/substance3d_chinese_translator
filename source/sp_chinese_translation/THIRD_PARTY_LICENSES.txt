@@ -35,6 +35,6 @@ These transitive libraries provide compression, HDF5 filters and archive
 support. They are distributed under their respective zlib, BSD, public-domain,
 BSD 2-Clause, BSD 3-Clause, BSD-style and Apache-2.0 licenses.
 
-Complete license texts for the exact dependency versions are available in the
-vcpkg `share/<package>/copyright` files produced from
-`source/sp_chinese_translation/extractor/vcpkg.json`.
+Complete license texts for the exact dependency versions are bundled in
+`source/sdks/deps/share/<package>/copyright` (the same files vcpkg generated from
+`source/sp_chinese_translation/cpp/vcpkg.json`).

@@ -57,7 +57,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "sp_translation_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "2.0.1"
+PLUGIN_VERSION = "2.0.2"
 PLUGIN_REPO = "iillya/sp_chinese_translation"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -373,6 +373,31 @@ def _parse_asset_xml(path, attributes):
                 value = raw_value.strip()
                 if value and not _contains_han(value):
                     items.add(value)
+                    # Painter treats an unspaced slash in a group path as a
+                    # hierarchy separator, but only stores the complete path
+                    # in the SBSAR metadata (for example
+                    # ``Yarn Twist/Weft Twist``).  The UI displays each path
+                    # component separately, so extract those visible labels
+                    # as well.  A spaced slash, such as ``Leno / Gauze``, is
+                    # part of one label and must remain intact.
+                    is_group_path = (
+                        attribute == "group"
+                        or (attribute == "label"
+                            and str(element.tag).rsplit("}", 1)[-1]
+                            == "guigroup")
+                    )
+                    # Do not mistake weave ratios such as ``Satin 7/1`` or
+                    # ``Twill 1/3`` for hierarchy separators.
+                    group_separator = r"(?<![\s\d])/(?![\s\d])"
+                    if is_group_path and re.search(group_separator, value):
+                        items.update(
+                            component.strip()
+                            for component in re.split(
+                                group_separator, value
+                            )
+                            if component.strip()
+                            and not _contains_han(component)
+                        )
     except Exception:
         raise
     return items
@@ -380,6 +405,32 @@ def _parse_asset_xml(path, attributes):
 
 def _contains_han(text):
     return any("\u3400" <= char <= "\u9fff" for char in str(text))
+
+
+def _is_valid_translation_source(text):
+    """Return whether text can be retained as a translation source."""
+    value = str(text).strip()
+    if not value or _contains_han(value):
+        return False
+    if re.fullmatch(
+        r"[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)(?:[eE][+-]?\d+)?%?",
+        value,
+    ) is not None:
+        return False
+    return True
+
+
+def _is_extractable_source(text):
+    """Return whether text is a new source worth adding to an extraction."""
+    value = str(text).strip()
+    if not _is_valid_translation_source(value):
+        return False
+    if value in TRANSLATE_DICT:
+        return False
+    return not any(
+        value in translations
+        for translations in CONTROL_TRANSLATE_DICTS.values()
+    )
 
 
 def _parse_len_prefixed_strings(data):
@@ -771,7 +822,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             try:
                 name = resource_name(resource, identifier)
                 translated_name = TRANSLATE_DICT.get(name, "").strip()
-                if name and not _contains_han(name) and not translated_name:
+                if _is_extractable_source(name) and not translated_name:
                     names.add(name)
             except Exception as exc:
                 failures.append(str(exc))
@@ -1147,17 +1198,17 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             self.status_label.setText("已取消，没有写入输出文件。")
             return
 
-        # Chinese source strings are already localized and must never become
-        # translation keys. Filtering existing output as well keeps repeated
-        # extraction runs consistent with this rule.
+        # Existing output belongs to the user and must retain its translations,
+        # even after the same source is added to a loaded plugin dictionary.
+        # Dictionary deduplication applies only to newly discovered terms.
         translations = {
             source: target
             for source, target in self._load_existing_translations().items()
-            if not _contains_han(source)
+            if _is_valid_translation_source(source)
         }
         self._items = {
             source for source in self._items
-            if source and not _contains_han(source)
+            if _is_extractable_source(source)
         }
         for source in self._items:
             translations.setdefault(source, "")
@@ -1169,7 +1220,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             "extraction": {
                 "asset_count": len(self._files),
                 "failed_count": len(self._failed),
-                "term_count": len(self._items),
+                "term_count": len(translations),
                 "attributes": list(self._attributes),
                 "ordinary_filenames": self._include_file_names,
                 "container_filenames": True,
@@ -1198,7 +1249,9 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                     failure_log = ""
                     print(">>> 写失败日志出错:", exc)
             self.status_label.setText(
-                f"完成：{len(self._items)} 条词条，{len(self._failed)} 个失败"
+                f"完成：共 {len(translations)} 条词条，"
+                f"本次新增 {len(self._items)} 条，"
+                f"{len(self._failed)} 个失败"
             )
             self.log.appendPlainText(f"\n已写入: {self._output}")
             if failure_log:

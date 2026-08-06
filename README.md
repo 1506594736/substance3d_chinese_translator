@@ -8,7 +8,7 @@
 - 界面动态变化或拖动参数时自动补充翻译；悬停在插件翻译过的文字上可查看英文原文。
 - `Ctrl + 鼠标右键`直接修改当前翻译，并写回该词条所属的 JSON 词库。
 - 翻译图层面板（包括用户创建的图层名称），不修改项目中保存的实际图层名称。
-- 内置中文翻译工具，可扫描资源文件、GLSL 材质元数据，并导出资产库中未翻译的名称。
+- 内置中文翻译工具，可通过独立 C++ 提取器扫描资源文件、GLSL 材质元数据，并导出资产库中未翻译的名称。
 - 支持加载 `translations` 目录下所有 `*_zh.json` 词库。
 - 内置“检查插件更新”，从 GitHub Releases 获取正式版并原地更新。
 
@@ -50,7 +50,7 @@
 - **翻译图层面板（包括用户创建的图层名称）**：图层面板专用开关，仅总开关开启时可用。
 - **检查插件更新**：见上文。
 
-词条提取支持：递归扫描资源目录；从 7z/ZIP/HDF5 容器提取 XML 元数据词条；解析 `.spsm` 智能材质中的图层名；提取 `label`、`text`、`group`、`description`、`category`、`keywords`、`values` 等字段；提取 GLSL 元数据；可选提取普通文件名（默认开）和文件夹名（默认关）。已含中文的原文不会被提取；纯整数、小数、科学计数法和百分比数值也不会作为词条提取；插件目录现有全局词库及控件专属词库中已存在的原文会被跳过；已有输出中的已有译文会保留，新词条以空译文加入。
+词条提取由独立的 `sp_translation_extractor.exe` 完成，不依赖 Painter 自带的 Python 版本，也不会把解析崩溃带入 Painter 进程。它支持：递归扫描资源目录；从 7z/ZIP/HDF5 容器提取 XML 元数据词条；解析 `.spsm` 智能材质中的图层名；提取 `label`、`text`、`group`、`description`、`category`、`keywords`、`values` 等字段；提取 GLSL 元数据；可选提取普通文件名（默认开）和文件夹名（默认关）。已含中文的原文不会被提取；纯整数、小数、科学计数法和百分比数值也不会作为词条提取；插件目录现有全局词库及控件专属词库中已存在的原文会被跳过；已有输出中的已有译文会保留，新词条以空译文加入。失败项会写入输出文件旁的 `_failures.txt`。
 
 “导出资产库未翻译名称”通过 Painter 官方资源 API 导出尚无中文译文的资产名称，结果可直接编辑。
 
@@ -78,9 +78,8 @@
 
 ```text
 sp_chinese_translation/
-├─ __init__.py                         插件入口和词条提取器
-├─ native/                             原生 C++ 翻译模块（Qt6/Qt5 两个 DLL）
-├─ packages/                           资源容器解析依赖
+├─ __init__.py                         插件入口、工具窗口和进程控制
+├─ native/                             Qt6/Qt5 翻译 DLL 与独立 C++ 提取器
 ├─ translations/                       词库目录（official_assets_zh.json 等）
 └─ THIRD_PARTY_LICENSES.txt            第三方许可证
 ```
@@ -99,9 +98,9 @@ sp_chinese_translation/
 
 ### v2.0.2
 
-- 修复 Painter 2021 / Python 3.7 中资源词条提取全部失败的问题。
-- 内置 7z 解析器兼容 Python 3.7，并增加解析模块缓存与安全降级。
-- 打包时自动校验内置 Python 模块的 Python 3.7 语法兼容性。
+- 资源词条提取改为独立 C++ 程序，不再依赖 Painter 的 Python、NumPy、h5py 或 py7zr 版本。
+- 修复 SPPR 参数标签、SPSM 智能材质图层名及嵌套容器词条遗漏。
+- 提取失败与 Painter 进程隔离，并保留已有输出译文。
 
 ### v2.0.1
 
@@ -116,4 +115,4 @@ sp_chinese_translation/
 
 ## 仓库结构
 
-`source/sp_chinese_translation/`（含 `c++/` 原生模块）与 `source/sp_tools/`（含 `c++/` 原生模块）为两个独立插件源码；`source/qt-sdk` 为共用 Qt 构建工具链。构建脚本 `source/sp_chinese_translation/scripts/build_package.py` 会先编译 C++ 模块再打包到 `dist/`。
+`source/sp_chinese_translation/` 是插件源码；`c++/` 为 Qt5/Qt6 显示引擎，`extractor/` 为独立词条提取器，`source/qt-sdk` 为显示引擎共用 Qt 构建工具链。构建脚本 `source/sp_chinese_translation/scripts/build_package.py` 会先编译两个 DLL 和提取器 EXE，再打包到 `dist/`。提取器依赖由 vcpkg 的 `x64-windows-static` triplet 静态链接；构建机需把位于纯英文路径的 vcpkg 目录写入 `VCPKG_ROOT`。

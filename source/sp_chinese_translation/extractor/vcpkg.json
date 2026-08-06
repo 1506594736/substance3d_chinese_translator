@@ -1,0 +1,10 @@
+{
+  "name": "sp-translation-extractor",
+  "version-string": "2.0.2",
+  "dependencies": [
+    "hdf5",
+    "libarchive",
+    "nlohmann-json",
+    "pugixml"
+  ]
+}

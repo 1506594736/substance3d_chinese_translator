@@ -30,12 +30,13 @@ import json
 import shutil
 import subprocess
 import sys
+import os
 import tempfile
 import zipfile
 from pathlib import Path
 
 # 发布包只包含运行所需文件；以下目录是开发/构建用，不进入 zip
-EXCLUDED_TOP_DIRS = {"scripts", "c++", "__pycache__"}
+EXCLUDED_TOP_DIRS = {"scripts", "c++", "extractor", "packages", "__pycache__"}
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "source" / "sp_chinese_translation"
@@ -50,6 +51,10 @@ PACKAGED_DELEGATE_DLL = SRC / "native" / "sp_translation_delegate_qt6.dll"
 PACKAGED_DELEGATE_QT5_DLL = SRC / "native" / "sp_translation_delegate_qt5.dll"
 LEGACY_NATIVE_DLL = SRC / "native" / "sp_native_asset_delegate.dll"
 UNSUFFIXED_DELEGATE_DLL = SRC / "native" / "sp_translation_delegate.dll"
+EXTRACTOR_SRC = SRC / "extractor"
+EXTRACTOR_BUILD = Path(tempfile.gettempdir()) / "sp_translation_extractor_build"
+EXTRACTOR_EXE = EXTRACTOR_BUILD / "Release" / "sp_translation_extractor.exe"
+PACKAGED_EXTRACTOR_EXE = SRC / "native" / "sp_translation_extractor.exe"
 
 def _check_required_files() -> None:
     required = [
@@ -58,6 +63,9 @@ def _check_required_files() -> None:
         README,
         CXX_SRC / "CMakeLists.txt",
         CXX_SRC / "translation_ui_delegate.cpp",
+        EXTRACTOR_SRC / "CMakeLists.txt",
+        EXTRACTOR_SRC / "main.cpp",
+        EXTRACTOR_SRC / "vcpkg.json",
     ROOT / "source" / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Core.lib",
     ROOT / "source" / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Gui.lib",
     ROOT / "source" / "qt-sdk" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Widgets.lib",
@@ -82,28 +90,55 @@ def _validate_sources() -> None:
     # when this script itself is run by the current Python 3.11 toolchain.
     ast.parse(plugin_text, filename=str(plugin_source), feature_version=(3, 7))
 
-    vendor_zip = SRC / "packages" / "python.zip"
-    with zipfile.ZipFile(vendor_zip) as archive:
-        for name in archive.namelist():
-            if not name.endswith(".py"):
-                continue
-            source = archive.read(name).decode("utf-8-sig")
-            ast.parse(source, filename=name, feature_version=(3, 7))
-
-    dictionary_path = SRC / "translations" / "official_assets_zh.json"
-    payload = json.loads(dictionary_path.read_text(encoding="utf-8-sig"))
-    if payload.get("$schema") != "sp-translation-v1":
-        raise ValueError("official_assets_zh.json 的 $schema 无效")
-    if payload.get("language") != "zh-CN":
-        raise ValueError("official_assets_zh.json 的 language 必须是 zh-CN")
-    translations = payload.get("translations")
-    if not isinstance(translations, dict):
-        raise ValueError("official_assets_zh.json 缺少 translations 对象")
-    invalid = [key for key, value in translations.items()
-               if not isinstance(key, str) or not key
-               or not isinstance(value, str) or not value]
-    if invalid:
-        raise ValueError(f"official_assets_zh.json 含无效词条: {invalid[:5]}")
+    dictionaries = sorted((SRC / "translations").glob("*_zh.json"))
+    if not dictionaries:
+        raise ValueError("translations 目录中没有 *_zh.json 翻译包")
+    for dictionary_path in dictionaries:
+        payload = json.loads(dictionary_path.read_text(encoding="utf-8-sig"))
+        if payload.get("$schema") != "sp-translation-v1":
+            raise ValueError(f"{dictionary_path.name} 的 $schema 无效")
+        if payload.get("language") != "zh-CN":
+            raise ValueError(
+                f"{dictionary_path.name} 的 language 必须是 zh-CN"
+            )
+        translations = payload.get("translations", {})
+        control_types = payload.get("control_types", {})
+        if not isinstance(translations, dict):
+            raise ValueError(
+                f"{dictionary_path.name} 的 translations 必须是对象"
+            )
+        if not isinstance(control_types, dict):
+            raise ValueError(
+                f"{dictionary_path.name} 的 control_types 必须是对象"
+            )
+        sections = [("translations", translations)]
+        for control_type, section in control_types.items():
+            if not isinstance(control_type, str) or not control_type.strip():
+                raise ValueError(
+                    f"{dictionary_path.name} 含无效 control_type"
+                )
+            if not isinstance(section, dict) or not isinstance(
+                    section.get("translations"), dict):
+                raise ValueError(
+                    f"{dictionary_path.name} 的 {control_type!r} 缺少 "
+                    "translations 对象"
+                )
+            sections.append(
+                (f"control_types.{control_type}", section["translations"])
+            )
+        if not translations and not control_types:
+            raise ValueError(f"{dictionary_path.name} 不含任何翻译词条")
+        for section_name, entries in sections:
+            invalid = [
+                key for key, value in entries.items()
+                if not isinstance(key, str) or not key
+                or not isinstance(value, str) or not value
+            ]
+            if invalid:
+                raise ValueError(
+                    f"{dictionary_path.name} 的 {section_name} 含无效词条: "
+                    f"{invalid[:5]}"
+                )
 
 
 def _build_delegate() -> None:
@@ -136,12 +171,70 @@ def _build_delegate() -> None:
     print("已更新 Qt5 C++ 翻译模块:", PACKAGED_DELEGATE_QT5_DLL)
 
 
+def _find_vcpkg_root() -> Path:
+    """Locate an ASCII-path vcpkg checkout used for extractor dependencies."""
+    candidates = []
+    if os.environ.get("VCPKG_ROOT"):
+        candidates.append(Path(os.environ["VCPKG_ROOT"]))
+    candidates.append(ROOT / "build_tools" / "vcpkg")
+    for candidate in candidates:
+        executable = candidate / "vcpkg.exe"
+        if executable.is_file() and all(ord(char) < 128 for char in str(candidate)):
+            return candidate
+    raise RuntimeError(
+        "未找到位于纯英文路径的 vcpkg。请设置 VCPKG_ROOT，且该目录需包含 "
+        "vcpkg.exe。首次准备依赖可运行：vcpkg install --triplet "
+        "x64-windows-static --x-manifest-root=<extractor目录>。"
+    )
+
+
+def _build_extractor() -> None:
+    """Build the Python-independent asset term extractor."""
+    cmake = shutil.which("cmake")
+    if cmake is None:
+        raise RuntimeError("未找到 CMake，请先安装 CMake 并加入 PATH。")
+    vcpkg_root = _find_vcpkg_root()
+    installed = Path(os.environ.get(
+        "VCPKG_INSTALLED_DIR", vcpkg_root / "installed"
+    ))
+    subprocess.run(
+        [
+            str(vcpkg_root / "vcpkg.exe"), "install",
+            "--triplet", "x64-windows-static",
+            f"--x-manifest-root={EXTRACTOR_SRC}",
+            f"--x-install-root={installed}",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            cmake, "-S", str(EXTRACTOR_SRC), "-B", str(EXTRACTOR_BUILD),
+            "-A", "x64",
+            f"-DCMAKE_TOOLCHAIN_FILE={vcpkg_root / 'scripts' / 'buildsystems' / 'vcpkg.cmake'}",
+            f"-DVCPKG_INSTALLED_DIR={installed}",
+            "-DVCPKG_TARGET_TRIPLET=x64-windows-static",
+            "-DVCPKG_MANIFEST_MODE=OFF",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [cmake, "--build", str(EXTRACTOR_BUILD), "--config", "Release"],
+        check=True,
+    )
+    if not EXTRACTOR_EXE.is_file():
+        raise RuntimeError("编译完成但缺少 sp_translation_extractor.exe")
+    PACKAGED_EXTRACTOR_EXE.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(EXTRACTOR_EXE, PACKAGED_EXTRACTOR_EXE)
+    print("已更新独立 C++ 词条提取器:", PACKAGED_EXTRACTOR_EXE)
+
+
 def main() -> None:
     # A failed build must not leave an older archive that looks current.
     OUT.unlink(missing_ok=True)
     _check_required_files()
     _validate_sources()
     _build_delegate()
+    _build_extractor()
     DIST.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="sp_pkg_") as tmp:
@@ -171,6 +264,7 @@ def main() -> None:
         required = {"__init__.py",
                     "native/sp_translation_delegate_qt5.dll",
                     "native/sp_translation_delegate_qt6.dll",
+                    "native/sp_translation_extractor.exe",
                     "translations/official_assets_zh.json", "README.md"}
         missing = required.difference(names)
         if missing:

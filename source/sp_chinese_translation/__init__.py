@@ -49,7 +49,6 @@ IS_TRANSLATION_ENABLED = True
 TRANSLATE_LAYERS_PANEL = True
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
-PACKAGES_DIR = os.path.join(PLUGIN_DIR, "packages")
 NATIVE_DIR = os.path.join(PLUGIN_DIR, "native")
 DELEGATE_DLL_PATH = os.path.join(
     NATIVE_DIR,
@@ -63,9 +62,6 @@ PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
 )
 PLUGIN_ASSET_NAME = "sp_chinese_translation.zip"
-MAX_ARCHIVE_MEMBERS = 50_000
-MAX_NESTED_ARCHIVES = 128
-MAX_EXTRACT_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB per container
 
 def _read_bool_setting(key, default):
     """Read a boolean without PySide2's unreliable ``type=bool`` overload."""
@@ -284,6 +280,14 @@ def _load_archive_modules():
     packages_dir = os.path.join(PLUGIN_DIR, "packages")
     if packages_dir not in sys.path:
         sys.path.insert(0, packages_dir)
+    # Painter 7.2/2021 embeds Python 3.7, while current Painter uses Python
+    # 3.11. Extension modules are ABI-specific, so keep the legacy HDF5 stack
+    # isolated and select it before importing NumPy/h5py.
+    if sys.version_info[:2] == (3, 7):
+        legacy_packages_dir = os.path.join(packages_dir, "py37")
+        if (os.path.isdir(legacy_packages_dir)
+                and legacy_packages_dir not in sys.path):
+            sys.path.insert(0, legacy_packages_dir)
     pure_python_zip = os.path.join(packages_dir, "python.zip")
     if os.path.isfile(pure_python_zip) and pure_python_zip not in sys.path:
         sys.path.insert(0, pure_python_zip)
@@ -492,6 +496,26 @@ def _parse_spsm_layer_names(path):
     return items
 
 
+def _iter_xml_metadata_files(root):
+    """Yield XML metadata by content, including extensionless SBSAR entries."""
+    for path in pathlib.Path(root).rglob("*"):
+        try:
+            if not path.is_file():
+                continue
+            if path.suffix.lower() == ".xml":
+                yield path
+                continue
+            # Substance archives sometimes store XML metadata under a hash or
+            # an extensionless dataset name.  A small prefix is enough to
+            # recognize it without loading large textures into memory.
+            with path.open("rb") as stream:
+                prefix = stream.read(4096).lstrip(b"\xef\xbb\xbf\x00\t\r\n ")
+            if prefix.startswith(b"<?xml") or prefix.startswith(b"<"):
+                yield path
+        except OSError:
+            continue
+
+
 def _parse_glsl_metadata(path, attributes):
     """Extract user-facing strings from Painter GLSL JSON annotations."""
     selected = set(attributes)
@@ -572,9 +596,9 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self._items = set()
         self._failed = []
         self._cancelled = False
-        self._step_timer = QtCore.QTimer(self)
-        self._step_timer.setSingleShot(True)
-        self._step_timer.timeout.connect(self._process_next)
+        self._extractor_process = None
+        self._extractor_request = ""
+        self._extractor_stdout = ""
         self._build_ui()
 
     def _build_ui(self):
@@ -952,47 +976,143 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         if not self.package_id_edit.text().strip():
             QtWidgets.QMessageBox.warning(self, "无法开始", "翻译包 ID 不能为空。")
             return
-        self._attributes = tuple(attributes)
-        self._include_file_names = self.filename_check.isChecked()
-        self._include_folder_names = self.foldername_check.isChecked()
-        self._output = output
-        self._source_folder = folder
-        self._files = []
-        output_normalized = os.path.normcase(os.path.abspath(output))
-        for root, dirs, files in os.walk(folder):
-            dirs[:] = [name for name in dirs if name not in {
-                "_unpacked_assets", "__pycache__", ".alg_meta"
-            }]
-            for name in files:
-                path = os.path.join(root, name)
-                if os.path.normcase(os.path.abspath(path)) != output_normalized:
-                    self._files.append(path)
-        self._files.sort(key=str.casefold)
-        if not self._files:
-            QtWidgets.QMessageBox.information(
-                self, "没有资源", "所选目录中没有可扫描的文件。"
+        extractor = os.path.join(
+            NATIVE_DIR, "sp_translation_extractor.exe"
+        )
+        if not os.path.isfile(extractor):
+            QtWidgets.QMessageBox.critical(
+                self, "无法开始", "缺少 C++ 词条提取器。请重新安装插件。"
             )
             return
+        excluded = set(TRANSLATE_DICT)
+        for translations in CONTROL_TRANSLATE_DICTS.values():
+            excluded.update(translations)
+        descriptor, request_path = tempfile.mkstemp(
+            prefix="sp_translation_request_", suffix=".json"
+        )
+        os.close(descriptor)
+        request = {
+            "source": folder,
+            "output": output,
+            "package_id": self.package_id_edit.text().strip(),
+            "description": self.description_edit.text().strip(),
+            "ordinary_filenames": self.filename_check.isChecked(),
+            "folder_names": self.foldername_check.isChecked(),
+            "attributes": attributes,
+            "excluded": sorted(excluded, key=str.casefold),
+        }
+        try:
+            _write_json_atomic(request_path, request)
+        except Exception as exc:
+            try:
+                os.remove(request_path)
+            except OSError:
+                pass
+            QtWidgets.QMessageBox.critical(self, "无法开始", str(exc))
+            return
 
-        self._index = 0
-        self._items = set()
-        if self._include_folder_names:
-            for root, dirs, _files in os.walk(folder):
-                dirs[:] = [name for name in dirs if name not in {
-                    "_unpacked_assets", "__pycache__", ".alg_meta"
-                }]
-                for name in dirs:
-                    clean_name = name.strip()
-                    if clean_name and not _contains_han(clean_name):
-                        self._items.add(clean_name)
-        self._failed = []
         self._cancelled = False
         self.log.clear()
-        self.progress.setRange(0, len(self._files))
+        self.progress.setRange(0, 0)
         self.progress.setValue(0)
         self._set_running(True)
-        self.status_label.setText(f"发现 {len(self._files)} 个资产")
-        self._step_timer.start(0)
+        self.status_label.setText("正在启动 C++ 词条提取器…")
+        self._extractor_request = request_path
+        self._extractor_stdout = ""
+        process = QtCore.QProcess(self)
+        self._extractor_process = process
+        process.readyReadStandardOutput.connect(
+            self._read_extractor_output
+        )
+        process.readyReadStandardError.connect(
+            self._read_extractor_error
+        )
+        process.finished.connect(self._extractor_finished)
+        process.errorOccurred.connect(self._extractor_error)
+        process.start(extractor, ["--request", request_path])
+
+    def _read_extractor_output(self):
+        process = self._extractor_process
+        if not is_safe(process):
+            return
+        self._extractor_stdout += bytes(
+            process.readAllStandardOutput()
+        ).decode("utf-8", errors="replace")
+        while "\n" in self._extractor_stdout:
+            line, self._extractor_stdout = self._extractor_stdout.split(
+                "\n", 1
+            )
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except Exception:
+                self.log.appendPlainText(line)
+                continue
+            message_type = message.get("type")
+            if message_type == "progress":
+                current = int(message.get("current", 0))
+                total = max(0, int(message.get("total", 0)))
+                self.progress.setRange(0, max(1, total))
+                self.progress.setValue(current)
+                name = os.path.relpath(
+                    message.get("file", ""),
+                    self.folder_edit.text().strip(),
+                )
+                self.status_label.setText(
+                    f"[{current}/{total}] {name}"
+                )
+            elif message_type == "warning":
+                self.log.appendPlainText(
+                    f"失败  {message.get('file', '')}  "
+                    f"[{message.get('message', '')}]"
+                )
+            elif message_type == "finished":
+                self.status_label.setText(
+                    f"完成：新增 {message.get('terms', 0)} 条，"
+                    f"失败 {message.get('failures', 0)} 个"
+                )
+                self.log.appendPlainText(
+                    f"\n已写入: {message.get('output', '')}"
+                )
+            elif message_type == "fatal":
+                self.log.appendPlainText(
+                    f"致命错误: {message.get('message', '')}"
+                )
+
+    def _read_extractor_error(self):
+        process = self._extractor_process
+        if is_safe(process):
+            text = bytes(process.readAllStandardError()).decode(
+                "utf-8", errors="replace"
+            ).strip()
+            if text:
+                self.log.appendPlainText(text)
+
+    def _cleanup_extractor_request(self):
+        if self._extractor_request:
+            try:
+                os.remove(self._extractor_request)
+            except OSError:
+                pass
+            self._extractor_request = ""
+
+    def _extractor_finished(self, exit_code, _exit_status):
+        self._read_extractor_output()
+        self._read_extractor_error()
+        self._cleanup_extractor_request()
+        self._set_running(False)
+        if self._cancelled:
+            self.status_label.setText("已取消，没有覆盖输出文件。")
+        elif exit_code != 0:
+            self.status_label.setText(f"提取失败（错误码 {exit_code}）")
+        self._extractor_process = None
+
+    def _extractor_error(self, _error):
+        process = self._extractor_process
+        if is_safe(process):
+            self.log.appendPlainText(process.errorString())
 
     def _extract_archive(self, asset_path, destination):
         py7zr, h5py = _load_archive_modules()
@@ -1002,14 +1122,6 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 _safe_archive_names(entry.filename for entry in entries)
                 if any(_archive_entry_is_link(entry) for entry in entries):
                     raise ValueError("容器包含不允许的符号链接")
-                total_bytes = sum(
-                    int(getattr(entry, "uncompressed", 0) or 0)
-                    for entry in entries
-                )
-                if total_bytes > MAX_EXTRACT_BYTES:
-                    raise ValueError(
-                        f"容器解压后体积过大（{total_bytes / 2**30:.1f} GiB）"
-                    )
                 archive.extractall(path=destination)
             return "7z"
         if zipfile.is_zipfile(asset_path):
@@ -1019,35 +1131,20 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 if any((entry.external_attr >> 16) & 0o170000 == 0o120000
                        for entry in entries):
                     raise ValueError("容器包含不允许的符号链接")
-                total_bytes = sum(entry.file_size for entry in entries)
-                if total_bytes > MAX_EXTRACT_BYTES:
-                    raise ValueError(
-                        f"容器解压后体积过大（{total_bytes / 2**30:.1f} GiB）"
-                    )
                 archive.extractall(path=destination)
             return "zip"
         if h5py is not None and h5py.is_hdf5(asset_path):
             with h5py.File(asset_path, mode="r") as archive:
                 dataset_names = []
-                total_bytes = 0
 
                 def _record_dataset(name, obj):
-                    nonlocal total_bytes
                     if isinstance(obj, h5py.Dataset):
                         dataset_names.append(name)
-                        try:
-                            total_bytes += int(obj.size) * int(obj.dtype.itemsize)
-                        except Exception:
-                            pass
 
                 archive.visititems(
                     _record_dataset
                 )
                 _safe_archive_names(dataset_names)
-                if total_bytes > MAX_EXTRACT_BYTES:
-                    raise ValueError(
-                        f"容器解压后体积过大（{total_bytes / 2**30:.1f} GiB）"
-                    )
                 for name in dataset_names:
                     dataset = archive[name]
                     value = dataset[()]
@@ -1077,13 +1174,13 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             path, depth = queue.pop(0)
             if depth > 3 or path.suffix.lower() == ".xml":
                 continue
-            if expanded >= MAX_NESTED_ARCHIVES:
-                raise ValueError("嵌套容器超过 128 个安全上限")
             try:
                 py7zr, h5py = _load_archive_modules()
                 is_container = _is_supported_container(path, py7zr, h5py)
                 if not is_container:
                     continue
+                if expanded >= MAX_NESTED_ARCHIVES:
+                    raise ValueError("嵌套容器超过 128 个安全上限")
                 serial += 1
                 destination = pathlib.Path(root) / f"_nested_{serial}"
                 destination.mkdir(parents=True, exist_ok=True)
@@ -1095,8 +1192,15 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 except Exception:
                     children = []
                 queue.extend((child, depth + 1) for child in children)
-            except Exception:
-                continue
+            except Exception as exc:
+                try:
+                    nested_name = str(path.relative_to(root))
+                except Exception:
+                    nested_name = str(path)
+                self._failed.append(
+                    (f"嵌套容器 :: {nested_name}", str(exc),
+                     traceback.format_exc())
+                )
         return expanded
 
     def _process_next(self):
@@ -1118,7 +1222,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             # mandatory. The option only controls ordinary file names.
             suffix = pathlib.Path(asset_path).suffix.lower()
             known_container_name = suffix in {
-                ".sbsar", ".spsm", ".spp", ".sbsprs", ".sbsasm",
+                ".sbsar", ".spsm", ".sppr", ".spp", ".sbsprs", ".sbsasm",
                 ".zip", ".7z",
             }
             file_name = pathlib.Path(asset_path).stem.strip()
@@ -1132,7 +1236,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                     archive_type = self._extract_archive(asset_path, temporary)
                     nested_count = self._expand_nested_archives(temporary)
                     xml_count = 0
-                    for xml_path in pathlib.Path(temporary).rglob("*.xml"):
+                    for xml_path in _iter_xml_metadata_files(temporary):
                         xml_count += 1
                         try:
                             self._items.update(
@@ -1148,7 +1252,8 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                                  traceback.format_exc())
                             )
                     if archive_type == "hdf5":
-                        layer_names = _parse_spsm_layer_names(asset_path)
+                        if suffix != ".sppr":
+                            layer_names = _parse_spsm_layer_names(asset_path)
                         self._items.update(layer_names)
                 detail = (f"{archive_type}, 嵌套包 {nested_count}, "
                           f"XML {xml_count}, 图层名 {len(layer_names)}")
@@ -1264,10 +1369,18 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self._cancelled = True
         self.cancel_button.setEnabled(False)
         self.status_label.setText("正在取消…")
+        process = self._extractor_process
+        if is_safe(process):
+            process.kill()
 
     def shutdown(self):
         self._cancelled = True
-        self._step_timer.stop()
+        process = self._extractor_process
+        if is_safe(process):
+            process.kill()
+            process.waitForFinished(1500)
+        self._extractor_process = None
+        self._cleanup_extractor_request()
 
 
 _label_extractor_dialog = None

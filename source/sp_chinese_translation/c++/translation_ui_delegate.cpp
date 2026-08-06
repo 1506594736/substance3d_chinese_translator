@@ -578,6 +578,25 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
     if (!widget || !g_enabled)
         return {};
 
+    // Color editors are composite controls and may deliver the tooltip event
+    // through an internal QLabel/QWidget rather than Alg::ColorButton itself.
+    // Never replace Painter's color-editing hover behaviour with an English
+    // original-text hint.
+    for (QObject *current = widget; current; current = current->parent()) {
+        const QString className =
+            QString::fromLatin1(current->metaObject()->className());
+        const QString objectName = current->objectName();
+        if (className == QStringLiteral("Alg::ColorButton") ||
+            className.contains(QStringLiteral("ColorPicker"),
+                               Qt::CaseInsensitive) ||
+            className.contains(QStringLiteral("ColorEditor"),
+                               Qt::CaseInsensitive) ||
+            objectName == QStringLiteral("colorZone"))
+            return {};
+        if (className == QStringLiteral("Alg::AbstractDataView"))
+            break;
+    }
+
     // QMenu paints all entries itself, so there is no child label from which
     // the generic tooltip path can recover the source. Only actions actually
     // translated by this plug-in carry this marker; Painter's native entries
@@ -720,8 +739,13 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
             }
         }
     }
-    else if (auto *dock = qobject_cast<QDockWidget *>(widget))
-        displayed = dock->windowTitle();
+    // A QDockWidget covers its complete panel, including large blank content
+    // areas. Treating its window title as text under the cursor therefore
+    // produced an unrelated tooltip (for example "Properties - Fill") almost
+    // anywhere inside the properties panel. The real title-bar label is a
+    // separate child widget and is handled by the QLabel path above.
+    else if (qobject_cast<QDockWidget *>(widget))
+        return {};
 
     displayed.remove(u'&');
     displayed = displayed.trimmed();
@@ -732,6 +756,24 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
 bool shouldSuppressTooltip(QWidget *widget) {
     if (!widget)
         return false;
+
+    // Apply this test before the QLabel exception below. Painter's color
+    // control contains label-like children, and those children must not revive
+    // the plug-in's original-text tooltip while the color swatch is hovered.
+    for (QObject *current = widget; current; current = current->parent()) {
+        const QString className =
+            QString::fromLatin1(current->metaObject()->className());
+        const QString objectName = current->objectName();
+        if (className == QStringLiteral("Alg::ColorButton") ||
+            className.contains(QStringLiteral("ColorPicker"),
+                               Qt::CaseInsensitive) ||
+            className.contains(QStringLiteral("ColorEditor"),
+                               Qt::CaseInsensitive) ||
+            objectName == QStringLiteral("colorZone"))
+            return true;
+        if (className == QStringLiteral("Alg::AbstractDataView"))
+            break;
+    }
 
     // A parameter title is meaningful translated text even when it is a child
     // of Alg::Slider or owns Painter's long descriptive tooltip. The tooltip

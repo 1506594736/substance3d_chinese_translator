@@ -32,9 +32,10 @@
 
 ## 安装方法
 
-1. 在 `...\Documents\Adobe\Adobe Substance 3D Painter\python\plugins\` 下新建 `sp_chinese_translation` 文件夹。
-2. 将发布包 `sp_chinese_translation.zip` 解压到该文件夹（压缩包根目录就是插件内容）。
-3. 启动 Substance 3D Painter，打开菜单 `Python`，勾选"中文翻译补全插件"。
+1. 打开 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Painter\python\plugins` 文件夹。
+2. 将发布包 `sp_chinese_translation.zip` 解压到该文件夹。
+3. 此时你应该看到 `__init__.py` 在目录 `...\python\plugins\sp_chinese_translation` 中。
+4. 启动 Substance 3D Painter，打开菜单 `Python`，勾选"中文翻译补全插件"。
 
 手动安装或替换插件目录前请先完全退出 Painter；插件自带的"检查插件更新"无需退出。
 

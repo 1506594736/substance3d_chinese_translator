@@ -41,8 +41,19 @@ IS_APP_QUITTING = False
 IS_CLEANING = False
 IS_TRANSLATION_ENABLED = True
 TRANSLATE_LAYERS_PANEL = True
+FUZZY_MATCH_ENABLED = True
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
+_PUBLIC_TRANSLATIONS_DIR = os.path.normpath(
+    os.path.join(PLUGIN_DIR, "..", "public", "translations")
+)
+# Source builds share one dictionary directory. Installed release packages do
+# not contain source/public, so they transparently fall back to their bundled
+# translations copy.
+TRANSLATIONS_DIR = (
+    _PUBLIC_TRANSLATIONS_DIR
+    if os.path.isdir(_PUBLIC_TRANSLATIONS_DIR)
+    else os.path.join(PLUGIN_DIR, "translations")
+)
 NATIVE_DIR = os.path.join(PLUGIN_DIR, "native")
 DELEGATE_DLL_PATH = os.path.join(
     NATIVE_DIR,
@@ -198,6 +209,8 @@ def _load_native_delegate():
         dll.sp_delegate_set_fallback_path.restype = None
         dll.sp_delegate_set_enabled.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_enabled.restype = None
+        dll.sp_delegate_set_fuzzy_match.argtypes = [ctypes.c_int]
+        dll.sp_delegate_set_fuzzy_match.restype = None
         dll.sp_delegate_set_translate_layers.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_translate_layers.restype = None
         dll.sp_delegate_install.argtypes = [ctypes.c_void_p]
@@ -205,8 +218,8 @@ def _load_native_delegate():
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
         api_version = dll.sp_delegate_api_version()
-        if api_version != 9:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 9，实际 {api_version}")
+        if api_version != 10:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 10，实际 {api_version}")
             return None
         _native_delegate = dll
     except Exception as exc:
@@ -225,6 +238,7 @@ def _sync_native_dictionary():
             os.path.join(TRANSLATIONS_DIR, "user_added_zh.json")
         )
         dll.sp_delegate_set_translate_layers(int(TRANSLATE_LAYERS_PANEL))
+        dll.sp_delegate_set_fuzzy_match(int(FUZZY_MATCH_ENABLED))
         dll.sp_delegate_reserve_translations(len(TRANSLATE_DICT))
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
@@ -381,6 +395,18 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             _set_layers_panel_translation
         )
         translation_layout.addWidget(self.layers_translation_check)
+        self.fuzzy_match_check = QtWidgets.QCheckBox(
+            "启用模糊匹配（精准匹配优先，兼容大小写、全半角、下划线等差异）",
+            translation_group,
+        )
+        self.fuzzy_match_check.setChecked(FUZZY_MATCH_ENABLED)
+        self.fuzzy_match_check.setToolTip(
+            "勾选后，当词库中找不到完全相同的原文时，"
+            "会忽略大小写、全角/半角、下划线、多余空格、省略号等差异进行匹配。"
+            "词库中的精准词条始终优先。"
+        )
+        self.fuzzy_match_check.toggled.connect(_set_fuzzy_match)
+        translation_layout.addWidget(self.fuzzy_match_check)
         translation_hint = QtWidgets.QLabel(
             "提示：取消勾选“启用插件翻译”后，整个界面立即恢复英文原文。"
             "仅关闭“翻译图层面板”则只恢复图层面板中的原文。",
@@ -883,6 +909,25 @@ def _set_layers_panel_translation(enabled):
             dll.sp_delegate_set_translate_layers(int(TRANSLATE_LAYERS_PANEL))
         except Exception as exc:
             print(">>> 切换图层面板翻译失败:", exc)
+
+
+def _set_fuzzy_match(enabled):
+    """Toggle the fuzzy fallback of the C++ translation engine.
+
+    Exact dictionary lookups always win; fuzzy matching only catches casing,
+    full/half-width, underscore and whitespace differences.
+    """
+    global FUZZY_MATCH_ENABLED
+    FUZZY_MATCH_ENABLED = bool(enabled)
+    QtCore.QSettings().setValue(
+        "sp_chinese_translation/fuzzy_match", FUZZY_MATCH_ENABLED
+    )
+    dll = _load_native_delegate()
+    if dll is not None:
+        try:
+            dll.sp_delegate_set_fuzzy_match(int(FUZZY_MATCH_ENABLED))
+        except Exception as exc:
+            print(">>> 切换模糊匹配失败:", exc)
 
 
 def _set_translation_enabled(enabled):
@@ -1509,6 +1554,7 @@ def show_translation_tool():
         _label_extractor_dialog = ChineseTranslationToolDialog(
             sp.ui.get_main_window()
         )
+    _label_extractor_dialog.fuzzy_match_check.setChecked(FUZZY_MATCH_ENABLED)
     _label_extractor_dialog.show()
     _label_extractor_dialog.raise_()
     _label_extractor_dialog.activateWindow()
@@ -1575,7 +1621,7 @@ def _set_registered_plugin_display_name(main_window):
 
 def start_plugin():
     global IS_APP_QUITTING, IS_CLEANING, IS_TRANSLATION_ENABLED
-    global TRANSLATE_LAYERS_PANEL
+    global TRANSLATE_LAYERS_PANEL, FUZZY_MATCH_ENABLED
     global _label_extractor_action, _label_extractor_menu_bar
 
     app = QtWidgets.QApplication.instance()
@@ -1592,6 +1638,9 @@ def start_plugin():
     )
     TRANSLATE_LAYERS_PANEL = _read_bool_setting(
         "sp_chinese_translation/translate_layers_panel", True
+    )
+    FUZZY_MATCH_ENABLED = _read_bool_setting(
+        "sp_chinese_translation/fuzzy_match", True
     )
 
     # Remove native DLLs/EXEs renamed aside by a previous in-place update.

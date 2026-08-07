@@ -6,7 +6,8 @@ Layout:
     source/sp_chinese_translation/    canonical plugin source (single source of truth)
     source/sp_chinese_translation/c++/  C++ translation delegate source
     source/sp_chinese_translation/scripts/  build/diagnostic/dictionary tools
-    source/sdks                       bundled Qt SDKs and extractor dependencies
+    source/public/sdks                bundled Qt SDKs and extractor dependencies
+    source/public/translations        shared SP/SD translation dictionaries
     dist/sp_chinese_translation.zip   generated release archive (zip root == plugin content)
 
 One-click build (run from the repository root):
@@ -18,8 +19,8 @@ stops packaging, so an old DLL can never be published accidentally.
 
 Requirements and notes:
     * Windows x64 with CMake and MSVC Build Tools / Visual Studio C++ tools.
-    * Keep both compact Qt5.12.5 and Qt6 SDKs under ``source/sdks/qt``.
-    * Extractor dependencies are bundled under ``source/sdks/deps``; no vcpkg or
+    * Keep both compact Qt5.12.5 and Qt6 SDKs under ``source/public/sdks/qt``.
+    * Extractor dependencies are bundled under ``source/public/sdks/deps``; no vcpkg or
       network access is required to build.
     * Substance Painter must be closed only when installing/replacing the DLL;
       it does not need to be closed merely to build this archive.
@@ -42,6 +43,8 @@ EXCLUDED_TOP_DIRS = {"scripts", "cpp", "packages", "__pycache__"}
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "source" / "sp_chinese_translation"
+PUBLIC = ROOT / "source" / "public"
+TRANSLATIONS = PUBLIC / "translations"
 DIST = ROOT / "dist"
 OUT = DIST / "sp_chinese_translation.zip"
 README = ROOT / "README.md"
@@ -55,12 +58,12 @@ LEGACY_NATIVE_DLL = SRC / "native" / "sp_native_asset_delegate.dll"
 UNSUFFIXED_DELEGATE_DLL = SRC / "native" / "sp_translation_delegate.dll"
 EXTRACTOR_EXE = CPP_BUILD / "Release" / "sp_translation_extractor.exe"
 PACKAGED_EXTRACTOR_EXE = SRC / "native" / "sp_translation_extractor.exe"
-DEPS_ROOT = ROOT / "source" / "sdks" / "deps"
+DEPS_ROOT = PUBLIC / "sdks" / "deps"
 
 def _check_required_files() -> None:
     required = [
         SRC / "__init__.py",
-        SRC / "translations" / "official_assets_zh.json",
+        TRANSLATIONS / "official_assets_zh.json",
         README,
         CPP_SRC / "CMakeLists.txt",
         CPP_SRC / "translation_ui_delegate.cpp",
@@ -69,12 +72,12 @@ def _check_required_files() -> None:
         DEPS_ROOT / "include" / "archive.h",
         DEPS_ROOT / "lib" / "archive.lib",
         DEPS_ROOT / "lib" / "libhdf5.lib",
-    ROOT / "source" / "sdks" / "qt" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Core.lib",
-    ROOT / "source" / "sdks" / "qt" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Gui.lib",
-    ROOT / "source" / "sdks" / "qt" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Widgets.lib",
-    ROOT / "source" / "sdks" / "qt" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Core.lib",
-    ROOT / "source" / "sdks" / "qt" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Gui.lib",
-    ROOT / "source" / "sdks" / "qt" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Widgets.lib",
+    PUBLIC / "sdks" / "qt" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Core.lib",
+    PUBLIC / "sdks" / "qt" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Gui.lib",
+    PUBLIC / "sdks" / "qt" / "6.5.3" / "msvc2019_64" / "lib" / "Qt6Widgets.lib",
+    PUBLIC / "sdks" / "qt" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Core.lib",
+    PUBLIC / "sdks" / "qt" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Gui.lib",
+    PUBLIC / "sdks" / "qt" / "5.12.5" / "msvc2017_64" / "lib" / "Qt5Widgets.lib",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -93,7 +96,7 @@ def _validate_sources() -> None:
     # when this script itself is run by the current Python 3.11 toolchain.
     ast.parse(plugin_text, filename=str(plugin_source), feature_version=(3, 7))
 
-    dictionaries = sorted((SRC / "translations").glob("*_zh.json"))
+    dictionaries = sorted(TRANSLATIONS.glob("*_zh.json"))
     if not dictionaries:
         raise ValueError("translations 目录中没有 *_zh.json 翻译包")
     for dictionary_path in dictionaries:
@@ -192,6 +195,7 @@ def main() -> None:
             pkg,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
+        shutil.copytree(TRANSLATIONS, pkg / "translations")
 
         # The release archive always ships the current top-level README.
         shutil.copy2(README, pkg / "README.md")

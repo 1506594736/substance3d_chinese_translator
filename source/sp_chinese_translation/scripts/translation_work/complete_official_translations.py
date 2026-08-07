@@ -3,7 +3,8 @@ import re
 from pathlib import Path
 
 
-PATH = Path(__file__).with_name("official_assets_zh.json")
+PATH = (Path(__file__).resolve().parents[3] / "public" / "translations"
+        / "official_assets_zh.json")
 HAN = re.compile(r"[\u3400-\u9fff]")
 
 

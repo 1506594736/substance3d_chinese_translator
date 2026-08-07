@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
-OFFICIAL = ROOT / "official_assets_zh.json"
+SOURCE_ROOT = Path(__file__).resolve().parents[3]
+OFFICIAL = SOURCE_ROOT / "public" / "translations" / "official_assets_zh.json"
 INPUTS = [
     Path.home() / "Desktop" / "1.json",
     Path.home() / "Desktop" / "2.json",

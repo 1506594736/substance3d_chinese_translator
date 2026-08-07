@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 INCOMING = Path(os.environ.get("SP_INCOMING", Path.home() / "Desktop/1.json"))
-OFFICIAL = ROOT / "source/sp_chinese_translation/translations/official_assets_zh.json"
+OFFICIAL = ROOT / "source/public/translations/official_assets_zh.json"
 
 
 def calibrated(source, target):

@@ -5,7 +5,8 @@ import re
 from pathlib import Path
 
 
-PATH = Path(__file__).resolve().parents[2] / "translations" / "my_assets_zh.json"
+PATH = (Path(__file__).resolve().parents[3] / "public" / "translations"
+        / "my_assets_zh.json")
 
 
 TEXT_REPLACEMENTS = {

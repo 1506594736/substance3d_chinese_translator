@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 TARGET = Path(__file__).with_name("extracted_assets_zh.json")
-OFFICIAL = ROOT / "source/sp_chinese_translation/translations/official_assets_zh.json"
+OFFICIAL = ROOT / "source/public/translations/official_assets_zh.json"
 HAN = re.compile(r"[\u3400-\u9fff]")
 
 

@@ -211,42 +211,69 @@ bool selectedAttribute(const State &state, const std::string &name) {
     return false;
 }
 
+void addXmlValue(State &state, const std::string &field,
+                 const std::string &nodeName, const std::string &raw) {
+    const std::string value = trim(raw);
+    addTerm(state, value);
+    const bool groupPath = field == "group" ||
+        (field == "label" && nodeName == "guigroup");
+    if (!groupPath)
+        return;
+    // Split only unspaced, non-numeric hierarchy slashes. Ratios such as 7/1
+    // and captions such as Leno / Gauze remain intact.
+    std::size_t start = 0;
+    bool split = false;
+    while (start < value.size()) {
+        const std::size_t slash = value.find('/', start);
+        if (slash == std::string::npos)
+            break;
+        const unsigned char before = slash > 0
+            ? static_cast<unsigned char>(value[slash - 1]) : ' ';
+        const unsigned char after = slash + 1 < value.size()
+            ? static_cast<unsigned char>(value[slash + 1]) : ' ';
+        if (!std::isspace(before) && !std::isspace(after) &&
+            !std::isdigit(before) && !std::isdigit(after)) {
+            addTerm(state, value.substr(start, slash - start));
+            start = slash + 1;
+            split = true;
+        } else {
+            start = slash + 1;
+        }
+    }
+    if (split && start < value.size())
+        addTerm(state, value.substr(start));
+}
+
 void collectXmlNode(State &state, pugi::xml_node node) {
     if (node.type() == pugi::node_element) {
+        const std::string nodeName = node.name();
+
+        // Designer .sbs files store metadata as an element whose value is in
+        // its `v` attribute, for example <label v="3D Perlin noise"/>. Keep
+        // supporting the older attribute-oriented Painter XML below as well.
+        if (selectedAttribute(state, nodeName)) {
+            const pugi::xml_attribute value = node.attribute("v");
+            if (value)
+                addXmlValue(state, nodeName, nodeName, value.value());
+        }
+
+        // Widget component captions use an option pair instead of a label
+        // element: <option><name v="label0"/><value v="X"/></option>.
+        // Treat label0, label1, label2, ... as the common `label` field.
+        if (nodeName == "option") {
+            const pugi::xml_node nameNode = node.child("name");
+            const pugi::xml_node valueNode = node.child("value");
+            const pugi::xml_attribute field = nameNode.attribute("v");
+            const pugi::xml_attribute value = valueNode.attribute("v");
+            if (field && value && selectedAttribute(state, field.value()))
+                addXmlValue(state, field.value(), nodeName, value.value());
+        }
+
         for (pugi::xml_attribute attribute : node.attributes()) {
             const std::string name = attribute.name();
             if (!selectedAttribute(state, name))
                 continue;
-            const std::string value = trim(attribute.value());
-            addTerm(state, value);
-            const std::string nodeName = node.name();
-            const bool groupPath = name == "group" ||
-                (name == "label" && nodeName == "guigroup");
-            if (!groupPath)
-                continue;
-            // Split only unspaced, non-numeric hierarchy slashes. Ratios such
-            // as 7/1 and captions such as Leno / Gauze remain intact.
-            std::size_t start = 0;
-            bool split = false;
-            while (start < value.size()) {
-                std::size_t slash = value.find('/', start);
-                if (slash == std::string::npos)
-                    break;
-                const unsigned char before = slash > 0
-                    ? static_cast<unsigned char>(value[slash - 1]) : ' ';
-                const unsigned char after = slash + 1 < value.size()
-                    ? static_cast<unsigned char>(value[slash + 1]) : ' ';
-                if (!std::isspace(before) && !std::isspace(after) &&
-                    !std::isdigit(before) && !std::isdigit(after)) {
-                    addTerm(state, value.substr(start, slash - start));
-                    start = slash + 1;
-                    split = true;
-                } else {
-                    start = slash + 1;
-                }
-            }
-            if (split && start < value.size())
-                addTerm(state, value.substr(start));
+            addXmlValue(state, name, nodeName, attribute.value());
         }
     }
     for (pugi::xml_node child : node.children())

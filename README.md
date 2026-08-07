@@ -167,7 +167,7 @@ sp插件/
 ### 构建要求
 
 - Windows x64，安装 CMake 与 Visual Studio 2022 Build Tools（MSVC C++ 工具链）。
-- Qt SDK 与提取器依赖已随仓库捆绑在 `source/sdks/`，**构建无需 vcpkg、无需网络**。
+- Qt SDK 与提取器依赖已随仓库捆绑在 `source/public/sdks/`，**构建无需 vcpkg、无需网络**。
 
 ### 构建步骤
 
@@ -205,7 +205,7 @@ python source/sp_chinese_translation/scripts/build_package.py
 - 提取器增加解析防护：XML/GLSL/preset.bin 与 HDF5 数据集均设置大小上限，防止恶意文件耗尽内存。
 - 提取日志改为每个文件都输出成功/失败；`_failures.txt` 仍只记录失败项。
 - 更新流程加固：更新包解压前校验成员路径并拒绝符号链接，防止路径穿越；正在执行的词条提取会阻止检查更新；被占用的 DLL/EXE 可改名替换。
-- 目录结构整理：原生 C++ 源码合并至 `cpp/`，Qt SDK 与提取器依赖合并至 `source/sdks/`；依赖全部随仓库捆绑，构建不再需要 vcpkg。
+- 目录结构整理：原生 C++ 源码合并至 `cpp/`；SP、SD 共用 `source/public/translations/` 词库；Qt SDK 与提取器依赖合并至 `source/public/sdks/`，构建不再需要 vcpkg。
 - 移除旧版遗留的 Python 词条提取死代码，消除潜在异常路径。
 
 ### v2.0.2
@@ -223,4 +223,4 @@ python source/sp_chinese_translation/scripts/build_package.py
 
 ## 许可证
 
-项目许可证见根目录 `LICENSE`；第三方组件许可证见 `source/sp_chinese_translation/THIRD_PARTY_LICENSES.txt`，各库完整许可文本随仓库捆绑于 `source/sdks/deps/share/`。
+项目许可证见根目录 `LICENSE`；第三方组件许可证见 `source/sp_chinese_translation/THIRD_PARTY_LICENSES.txt`，各库完整许可文本随仓库捆绑于 `source/public/sdks/deps/share/`。

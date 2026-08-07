@@ -8,6 +8,8 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QPointer>
 #include <QtCore/QSaveFile>
+#include <QtCore/QSet>
+#include <QtCore/QTextStream>
 #include <QtCore/QTimer>
 #include <QtCore/QVariant>
 #include <QtGui/QHelpEvent>
@@ -21,6 +23,7 @@
 #include <QtGui/QColor>
 #include <QtGui/QPainter>
 #include <QtGui/QPalette>
+#include <QtGui/QTextOption>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QAbstractSlider>
@@ -32,6 +35,9 @@
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
+#include <QtWidgets/QGraphicsObject>
+#include <QtWidgets/QGraphicsScene>
+#include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListView>
@@ -46,6 +52,10 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <windows.h>
+#include <intrin.h>
+
+#include <typeinfo>
+
 
 namespace {
 QHash<QString, QString> g_translations;
@@ -64,6 +74,8 @@ constexpr auto kSourceProperty = "_sp_translation_source";
 constexpr auto kComboSourcesProperty = "_sp_translation_combo_sources";
 constexpr auto kTabSourcesProperty = "_sp_translation_tab_sources";
 constexpr auto kTranslatingComboProperty = "_sp_translation_combo_busy";
+
+void translateWidget(QWidget *widget);
 
 bool containsCjk(const QString &text) {
     for (const QChar character : text) {
@@ -237,9 +249,10 @@ QString translated(const QString &text, bool removeMnemonic = false) {
         return exact.value();
     if (containsCjk(key))
         return {};
-    // Hosts append " *" to some parameter titles when their value differs
-    // from the inherited/default value.  It is UI state rather than part of
-    // the source term, so translate the stable title and preserve the marker.
+    // Designer appends " *" to an instance-parameter title as soon as the
+    // user overrides its inherited/default value.  The marker is UI state,
+    // not part of the translatable source string.  Match the stable title and
+    // then preserve the marker in the translated result.
     QString stateSuffix;
     if (key.endsWith(u'*')) {
         key.chop(1);
@@ -529,6 +542,476 @@ bool isResourcePickerView(QAbstractItemView *view) {
     return false;
 }
 
+#if defined(SD_TRANSLATION_DESIGNER)
+bool isDesignerGraphView(QGraphicsView *view) {
+    if (!view)
+        return false;
+    const QString className =
+        QString::fromLatin1(view->metaObject()->className());
+    return className ==
+               QStringLiteral("Pfx::Editor::Components::Graph::GraphView") ||
+           className.endsWith(QStringLiteral("::GraphView"));
+}
+
+// The graph's node text is substituted while the view paints, so toggling the
+// plug-in must schedule a repaint of every Designer graph view; otherwise the
+// previously painted translation (or original) stays on screen.
+void refreshGraphViews() {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    if (QCoreApplication::closingDown())
+        return;
+#endif
+    for (QWidget *widget : QApplication::allWidgets()) {
+        if (!widget || !widget->isVisible())
+            continue;
+        if (auto *view = qobject_cast<QGraphicsView *>(widget)) {
+            if (isDesignerGraphView(view) && view->viewport())
+                view->viewport()->update();
+        }
+    }
+}
+
+QGraphicsView *designerGraphViewForPainter(QPainter *painter) {
+    if (!painter || !painter->device())
+        return nullptr;
+    // QGraphicsView paints its scene directly on the viewport widget. This
+    // identifies that native paint pass without adding or moving scene items.
+    auto *viewport = dynamic_cast<QWidget *>(painter->device());
+    if (!viewport)
+        return nullptr;
+    auto *view = qobject_cast<QGraphicsView *>(viewport->parentWidget());
+    return isDesignerGraphView(view) && view->viewport() == viewport
+               ? view
+               : nullptr;
+}
+
+bool isDesignerGraphPainter(QPainter *painter) {
+    return designerGraphViewForPainter(painter) != nullptr;
+}
+
+// graphOwnerItem is defined below together with the other geometry helpers.
+QGraphicsItem *graphOwnerItem(QPainter *painter,
+                              qreal *differenceOut = nullptr);
+
+// The graph paints node titles that may be elided ("Name …") or shown as the
+// raw identifier. The owning item's tooltip carries the full display name on
+// its first line, which is the reliable key for the dictionary.
+QString stripHtmlTags(QString text) {
+    QString plain;
+    plain.reserve(text.size());
+    bool inTag = false;
+    for (const QChar ch : text) {
+        if (ch == u'<') {
+            inTag = true;
+        } else if (ch == u'>') {
+            inTag = false;
+        } else if (!inTag) {
+            plain.append(ch);
+        }
+    }
+    plain.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    plain.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    plain.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    plain.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    plain.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    return plain;
+}
+
+QString graphFullTitleFromItem(QGraphicsItem *item) {
+    for (QGraphicsItem *current = item; current;
+         current = current->parentItem()) {
+        const QString tip = current->toolTip().trimmed();
+        if (tip.isEmpty())
+            continue;
+        // Designer's tooltip is rich text: "<b>Name</b><br>(ID : ...)…".
+        // Take the first segment up to the first line break, then remove the
+        // HTML tags so the plain display name can be matched to the dictionary.
+        QString firstLine = tip;
+        const int htmlBreak =
+            firstLine.indexOf(QLatin1String("<br"), 0, Qt::CaseInsensitive);
+        if (htmlBreak >= 0)
+            firstLine = firstLine.left(htmlBreak);
+        const int newline = firstLine.indexOf(QLatin1Char('\n'));
+        if (newline >= 0)
+            firstLine = firstLine.left(newline);
+        firstLine = stripHtmlTags(firstLine).trimmed();
+        if (!firstLine.isEmpty())
+            return firstLine;
+    }
+    return {};
+}
+
+QString graphPaintTranslation(QPainter *painter, const QString &source) {
+    if (!g_enabled || containsCjk(source))
+        return {};
+    if (!isDesignerGraphPainter(painter))
+        return {};
+    // 1. Exact dictionary match always wins.
+    QString target = g_translations.value(source);
+    if (!target.isNull())
+        return target;
+    const auto cached = g_fuzzyResolved.constFind(source);
+    if (cached != g_fuzzyResolved.cend())
+        return cached.value();
+
+    // 2. Control-scoped dictionaries are the second exact tier; the graph
+    // paints asset names that may only exist in a scoped dictionary.
+    if (target.isNull())
+        target = anyControlTranslation(source);
+
+    // 3. Tooltip full-name fallback: the graph paints elided titles
+    // ("Name …") and identifier forms. The item tooltip carries the full
+    // display name on its first line. It is only accepted when the drawn text
+    // is its leading part, so unrelated strings (size labels, port names)
+    // never pick up the node title.
+    const QString normalized = normalizeForMatch(source);
+    QGraphicsItem *owner = graphOwnerItem(painter);
+    if (owner) {
+        const QString full = graphFullTitleFromItem(owner);
+        const QString fullNormalized = normalizeForMatch(full);
+        if (!fullNormalized.isEmpty() && fullNormalized != normalized &&
+            fullNormalized.startsWith(normalized)) {
+            target = g_translations.value(full);
+            if (target.isNull())
+                target = anyControlTranslation(full);
+            if (target.isNull())
+                target = g_translationsFolded.value(fullNormalized);
+        }
+    }
+
+    // 4. Global and scoped fuzzy matching on the drawn source (case,
+    // full-width, underscore, diacritics and whitespace differences). This
+    // step is gated by the plug-in option; the tooltip fallback always stays
+    // active.
+    if (target.isNull() && g_fuzzyMatchEnabled)
+        target = fuzzyTranslation(source);
+    if (target.isNull() && g_fuzzyMatchEnabled)
+        target = anyControlFuzzyTranslation(source);
+
+    g_fuzzyResolved.insert(source, target);
+    return target;
+}
+
+using DrawPoint = void (*)(QPainter *, const QPoint &, const QString &);
+using DrawPointF = void (*)(QPainter *, const QPointF &, const QString &);
+using DrawRect = void (*)(QPainter *, const QRect &, int, const QString &,
+                          QRect *);
+using DrawRectFOption = void (*)(QPainter *, const QRectF &, const QString &,
+                                 const QTextOption &);
+using DrawXY = void (*)(QPainter *, int, int, const QString &);
+using DrawXYWH = void (*)(QPainter *, int, int, int, int, int,
+                          const QString &, QRect *);
+
+DrawPoint g_drawPoint = nullptr;
+DrawPointF g_drawPointF = nullptr;
+DrawRect g_drawRect = nullptr;
+DrawRectFOption g_drawRectFOption = nullptr;
+DrawXY g_drawXY = nullptr;
+DrawXYWH g_drawXYWH = nullptr;
+bool g_graphPainterHooksInstalled = false;
+QSet<QString> g_graphPaintDiagnosticKeys;
+
+qreal transformDifference(const QTransform &a, const QTransform &b) {
+    return qAbs(a.m11() - b.m11()) + qAbs(a.m12() - b.m12()) +
+           qAbs(a.m13() - b.m13()) + qAbs(a.m21() - b.m21()) +
+           qAbs(a.m22() - b.m22()) + qAbs(a.m23() - b.m23()) +
+           qAbs(a.m31() - b.m31()) + qAbs(a.m32() - b.m32()) +
+           qAbs(a.m33() - b.m33());
+}
+
+QGraphicsItem *graphOwnerItem(QPainter *painter, qreal *differenceOut) {
+    QGraphicsView *view = designerGraphViewForPainter(painter);
+    if (!view || !view->scene()) {
+        if (differenceOut)
+            *differenceOut = 1.0e20;
+        return nullptr;
+    }
+    QGraphicsItem *owner = nullptr;
+    qreal bestDifference = 1.0e20;
+    const QTransform current = painter->worldTransform();
+    for (QGraphicsItem *item : view->scene()->items()) {
+        if (!item)
+            continue;
+        const qreal difference = transformDifference(
+            current, item->deviceTransform(view->viewportTransform()));
+        if (difference < bestDifference) {
+            bestDifference = difference;
+            owner = item;
+        }
+    }
+    if (differenceOut)
+        *differenceOut = bestDifference;
+    return owner;
+}
+
+void recordGraphPaintType(QPainter *painter, const QString &text,
+                          const char *overload, quintptr caller,
+                          int flags = -1) {
+    QGraphicsView *view = designerGraphViewForPainter(painter);
+    if (!view || !view->scene() || text.isEmpty())
+        return;
+
+    qreal bestDifference = 1.0e20;
+    QGraphicsItem *owner = graphOwnerItem(painter, &bestDifference);
+
+    const QString ownerRtti = owner
+        ? QString::fromLatin1(typeid(*owner).name())
+        : QStringLiteral("<none>");
+    const QString parentRtti = owner && owner->parentItem()
+        ? QString::fromLatin1(typeid(*owner->parentItem()).name())
+        : QStringLiteral("<none>");
+    const quintptr moduleBase =
+        reinterpret_cast<quintptr>(GetModuleHandleW(nullptr));
+    const quintptr callerRva = caller >= moduleBase ? caller - moduleBase : 0;
+    const QString key = QStringLiteral("%1|%2|%3|%4|%5|%6")
+                            .arg(text, QString::fromLatin1(overload), ownerRtti,
+                                 parentRtti)
+                            .arg(flags)
+                            .arg(callerRva, 0, 16);
+    if (g_graphPaintDiagnosticKeys.contains(key))
+        return;
+    g_graphPaintDiagnosticKeys.insert(key);
+
+    QFile output(QDir::temp().filePath(
+        QStringLiteral("sd_graph_paint_types.txt")));
+    if (!output.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+        return;
+    QTextStream stream(&output);
+    stream << "text=" << text << "\toverload=" << overload
+           << "\tflags=" << flags
+           << "\tcaller_rva=0x" << QString::number(callerRva, 16)
+           << "\towner_rtti=" << ownerRtti
+           << "\towner_public_type=" << (owner ? owner->type() : -1)
+           << "\towner_has_parent=" << (owner && owner->parentItem() ? 1 : 0)
+           << "\towner_flags=" << (owner ? int(owner->flags()) : -1)
+           << "\towner_z=" << (owner ? owner->zValue() : 0.0)
+           << "\towner_children=" << (owner ? owner->childItems().size() : -1)
+           << "\tparent_rtti=" << parentRtti
+           << "\ttransform_difference=" << bestDifference
+           << "\tpen=" << painter->pen().color().name(QColor::HexArgb)
+           << "\tfont_size=" << painter->font().pointSizeF()
+           << "\tfont_weight=" << painter->font().weight() << "\n";
+}
+
+// Designer's connector items draw each port label centered inside a rectangle
+// whose size and position are computed from the original text. Swapping in a
+// translation of a different width leaves the text centered inside that stale
+// rectangle, so its outer edge no longer lines up with the other port labels.
+// Port labels are anchored to the connector dot: input labels end at a fixed
+// column just left of the dot (right edge anchored), output labels start at a
+// fixed column just right of the dot (left edge anchored). Return +1 for an
+// input label, -1 for an output label and 0 when the side cannot be
+// determined.
+int graphPortLabelSide(QPainter *painter, const QRectF &rect) {
+    QGraphicsView *view = designerGraphViewForPainter(painter);
+    QGraphicsItem *owner = graphOwnerItem(painter);
+    if (!view || !owner || !owner->parentItem())
+        return 0;
+    const QString rtti = QString::fromLatin1(typeid(*owner).name());
+    if (!rtti.contains(QStringLiteral("Connector")))
+        return 0;
+    const QRectF nodeRect = owner->parentItem()->sceneBoundingRect();
+    if (nodeRect.width() <= 0.0)
+        return 0;
+    const qreal labelCenterX = painter->worldTransform().map(rect.center()).x();
+    const qreal nodeCenterX = view->mapFromScene(nodeRect.center()).x();
+    if (labelCenterX + 2.0 < nodeCenterX)
+        return 1;   // label on the left half of the node: input port
+    if (labelCenterX - 2.0 > nodeCenterX)
+        return -1;  // label on the right half of the node: output port
+    return 0;
+}
+
+Qt::Alignment graphPortLabelAlignment(Qt::Alignment alignment,
+                                      int portSide) {
+    alignment &= ~Qt::AlignHorizontal_Mask;
+    if (portSide == 1)
+        alignment |= Qt::AlignRight;   // input label: right edge meets the dot
+    else if (portSide == -1)
+        alignment |= Qt::AlignLeft;    // output label: left edge leaves the dot
+    else
+        alignment |= Qt::AlignHCenter;
+    return alignment;
+}
+
+void hookedDrawPoint(QPainter *painter, const QPoint &point,
+                     const QString &text) {
+    recordGraphPaintType(painter, text, "QPoint",
+                         reinterpret_cast<quintptr>(_ReturnAddress()));
+    const QString target = graphPaintTranslation(painter, text);
+    g_drawPoint(painter, point, target.isEmpty() ? text : target);
+}
+
+void hookedDrawPointF(QPainter *painter, const QPointF &point,
+                      const QString &text) {
+    recordGraphPaintType(painter, text, "QPointF",
+                         reinterpret_cast<quintptr>(_ReturnAddress()));
+    const QString target = graphPaintTranslation(painter, text);
+    g_drawPointF(painter, point, target.isEmpty() ? text : target);
+}
+
+void hookedDrawRect(QPainter *painter, const QRect &rect, int flags,
+                    const QString &text, QRect *boundingRect) {
+    recordGraphPaintType(painter, text, "QRect",
+                         reinterpret_cast<quintptr>(_ReturnAddress()), flags);
+    const QString target = graphPaintTranslation(painter, text);
+    g_drawRect(painter, rect, flags, target.isEmpty() ? text : target,
+               boundingRect);
+}
+
+void hookedDrawRectFOption(QPainter *painter, const QRectF &rect,
+                           const QString &text,
+                           const QTextOption &option) {
+    recordGraphPaintType(painter, text, "QRectF/QTextOption",
+                         reinterpret_cast<quintptr>(_ReturnAddress()),
+                         int(option.alignment()) |
+                             (int(option.textDirection()) << 16));
+    const QString target = graphPaintTranslation(painter, text);
+    if (target.isEmpty()) {
+        g_drawRectFOption(painter, rect, text, option);
+        return;
+    }
+    const int portSide = graphPortLabelSide(painter, rect);
+    if (portSide == 0) {
+        g_drawRectFOption(painter, rect, target, option);
+        return;
+    }
+    QTextOption drawOption(option);
+    drawOption.setWrapMode(QTextOption::NoWrap);
+    drawOption.setAlignment(graphPortLabelAlignment(option.alignment(),
+                                                    portSide));
+    g_drawRectFOption(painter, rect, target, drawOption);
+}
+
+void hookedDrawXY(QPainter *painter, int x, int y, const QString &text) {
+    recordGraphPaintType(painter, text, "XY",
+                         reinterpret_cast<quintptr>(_ReturnAddress()));
+    const QString target = graphPaintTranslation(painter, text);
+    g_drawXY(painter, x, y, target.isEmpty() ? text : target);
+}
+
+void hookedDrawXYWH(QPainter *painter, int x, int y, int width, int height,
+                    int flags, const QString &text, QRect *boundingRect) {
+    recordGraphPaintType(painter, text, "XYWH",
+                         reinterpret_cast<quintptr>(_ReturnAddress()), flags);
+    const QString target = graphPaintTranslation(painter, text);
+    g_drawXYWH(painter, x, y, width, height, flags,
+               target.isEmpty() ? text : target, boundingRect);
+}
+
+bool replaceMainModuleImport(void *original, void *replacement) {
+    if (!original || !replacement)
+        return false;
+    auto *base = reinterpret_cast<unsigned char *>(GetModuleHandleW(nullptr));
+    if (!base)
+        return false;
+    auto *dos = reinterpret_cast<IMAGE_DOS_HEADER *>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return false;
+    auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return false;
+    const DWORD importRva = nt->OptionalHeader
+        .DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!importRva)
+        return false;
+    bool replaced = false;
+    auto *descriptor =
+        reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR *>(base + importRva);
+    for (; descriptor->Name; ++descriptor) {
+        if (!descriptor->FirstThunk)
+            continue;
+        auto *thunk = reinterpret_cast<IMAGE_THUNK_DATA *>(
+            base + descriptor->FirstThunk);
+        for (; thunk->u1.Function; ++thunk) {
+            auto **slot = reinterpret_cast<void **>(&thunk->u1.Function);
+            if (*slot != original)
+                continue;
+            DWORD oldProtection = 0;
+            if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE,
+                                &oldProtection))
+                continue;
+            *slot = replacement;
+            DWORD ignored = 0;
+            VirtualProtect(slot, sizeof(void *), oldProtection, &ignored);
+            FlushInstructionCache(GetCurrentProcess(), slot, sizeof(void *));
+            replaced = true;
+        }
+    }
+    return replaced;
+}
+
+template <typename Function>
+bool hookQtGuiImport(HMODULE qtGui, const char *symbol, Function hook,
+                     Function &original) {
+    original = reinterpret_cast<Function>(GetProcAddress(qtGui, symbol));
+    return original && replaceMainModuleImport(
+        reinterpret_cast<void *>(original), reinterpret_cast<void *>(hook));
+}
+
+bool installGraphPainterHooks() {
+    if (g_graphPainterHooksInstalled)
+        return true;
+    HMODULE qtGui = GetModuleHandleW(L"Qt6Gui.dll");
+    if (!qtGui)
+        return false;
+    bool installed = false;
+    installed |= hookQtGuiImport(
+        qtGui, "?drawText@QPainter@@QEAAXAEBVQPoint@@AEBVQString@@@Z",
+        &hookedDrawPoint, g_drawPoint);
+    installed |= hookQtGuiImport(
+        qtGui, "?drawText@QPainter@@QEAAXAEBVQPointF@@AEBVQString@@@Z",
+        &hookedDrawPointF, g_drawPointF);
+    installed |= hookQtGuiImport(
+        qtGui,
+        "?drawText@QPainter@@QEAAXAEBVQRect@@HAEBVQString@@PEAV2@@Z",
+        &hookedDrawRect, g_drawRect);
+    installed |= hookQtGuiImport(
+        qtGui,
+        "?drawText@QPainter@@QEAAXAEBVQRectF@@AEBVQString@@AEBVQTextOption@@@Z",
+        &hookedDrawRectFOption, g_drawRectFOption);
+    installed |= hookQtGuiImport(
+        qtGui, "?drawText@QPainter@@QEAAXHHAEBVQString@@@Z",
+        &hookedDrawXY, g_drawXY);
+    installed |= hookQtGuiImport(
+        qtGui,
+        "?drawText@QPainter@@QEAAXHHHHHAEBVQString@@PEAVQRect@@@Z",
+        &hookedDrawXYWH, g_drawXYWH);
+    g_graphPainterHooksInstalled = installed;
+    return installed;
+}
+#endif
+
+#if defined(SD_TRANSLATION_DESIGNER)
+bool isDesignerResourceList(QAbstractItemView *view) {
+    if (!view || !view->model())
+        return false;
+    const QString viewClass =
+        QString::fromLatin1(view->metaObject()->className());
+    const QString modelClass =
+        QString::fromLatin1(view->model()->metaObject()->className());
+    return viewClass ==
+               QStringLiteral("Pfx::DataBase::ResourceTableWidget::CustomListView") &&
+           modelClass == QStringLiteral("Pfx::DataBase::ResourcesListModel");
+}
+
+bool isDesignerLibraryTree(QAbstractItemView *view) {
+    if (!view || !view->model() ||
+        view->objectName() != QStringLiteral("mTreeWidget"))
+        return false;
+    if (QString::fromLatin1(view->model()->metaObject()->className()) !=
+        QStringLiteral("QTreeModel"))
+        return false;
+    for (QObject *parent = view->parent(); parent; parent = parent->parent()) {
+        if (QString::fromLatin1(parent->metaObject()->className()) ==
+            QStringLiteral("Pfx::Editor::Components::Shelf::QueryExplorerWidget"))
+            return true;
+    }
+    return false;
+}
+
+#endif
+
 bool isResourceFolderTree(QAbstractItemView *view) {
     auto *tree = qobject_cast<QTreeView *>(view);
     if (!tree)
@@ -598,6 +1081,13 @@ void translateWidget(QWidget *widget) {
 
     const QString className = QString::fromLatin1(widget->metaObject()->className());
     if (auto *itemView = qobject_cast<QAbstractItemView *>(widget)) {
+#if defined(SD_TRANSLATION_DESIGNER)
+        if (isDesignerResourceList(itemView) ||
+            isDesignerLibraryTree(itemView)) {
+            installAssetDelegate(itemView);
+            return;
+        }
+#endif
         if (QComboBox *combo = owningComboBox(itemView);
             isLayerChannelSelector(combo)) {
             lockLayerChannelPopupWidth(combo);
@@ -1530,6 +2020,9 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enable
         // was translated by this delegate back to its original text.
         restoreAllTranslatedWidgets();
     }
+#if defined(SD_TRANSLATION_DESIGNER)
+    refreshGraphViews();
+#endif
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translation(
@@ -1564,6 +2057,14 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
         application = qobject_cast<QApplication *>(QCoreApplication::instance());
     if (!application)
         return 0;
+
+#if defined(SD_TRANSLATION_DESIGNER)
+    // Designer's private graph item paints its title directly; there is no
+    // public text child to edit. Patch only the host's imported QPainter
+    // drawText calls and substitute exact, currently visible node titles.
+    // Geometry, font, clipping and z-order therefore remain entirely native.
+    installGraphPainterHooks();
+#endif
 
     // Do not install a QTranslator: translators receive the original English
     // source before Painter's own translator and could therefore override an

@@ -67,13 +67,13 @@ PLUGIN_DIR = os.path.dirname(MODULE_DIR)
 # 词库统一放在插件包根目录的 translations/ 下，源码与安装包结构一致。
 TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
 NATIVE_DIR = os.path.join(PLUGIN_DIR, "native")
-EXTRACTOR_PATH = os.path.join(NATIVE_DIR, "translation_extractor.exe")
+EXTRACTOR_PATH = os.path.join(NATIVE_DIR, "translator_extractor.exe")
 # 统一的 Qt6 翻译引擎同时服务 Painter 10.1+ 与 Designer 15+，
 # C++ 侧在运行时自动识别宿主；Qt5 仅用于旧版 Painter。
 DELEGATE_DLL_PATH = os.path.join(
     NATIVE_DIR,
-    "translation_delegate_qt5.dll" if QT_MAJOR == 5
-    else "translation_delegate_qt6.dll",
+    "translator_delegate_qt5.dll" if QT_MAJOR == 5
+    else "translator_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
 PLUGIN_VERSION = "1.1.0"

@@ -836,7 +836,7 @@ int main(int argc, char **argv) {
 #endif
     try {
         if (argc != 3 || std::wstring(argv[1]) != L"--request") {
-            std::cerr << "usage: sp_translation_extractor --request request.json\n";
+            std::cerr << "usage: translator_extractor --request request.json\n";
             return 2;
         }
 #ifdef _WIN32

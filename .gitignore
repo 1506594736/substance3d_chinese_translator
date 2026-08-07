@@ -28,7 +28,7 @@
 
 # Executables
 *.exe
-!source/substance3d_chinese_translator/native/translation_extractor.exe
+!source/substance3d_chinese_translator/native/translator_extractor.exe
 *.out
 *.app
 

@@ -7,12 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 # One translation engine, two delegate binaries.  translation_ui_delegate.cpp
 # is the single source of truth for both hosts:
-#   * translation_delegate_qt5.dll     - Painter 7.2-10.0 (Qt 5.12.5)
-#   * translation_delegate_qt6.dll     - Painter 10.1+ and Designer 15+
+#   * translator_delegate_qt5.dll      - Painter 7.2-10.0 (Qt 5.12.5)
+#   * translator_delegate_qt6.dll      - Painter 10.1+ and Designer 15+
 #     (Qt 6.x). The Designer graph-painting hooks are compiled in and enabled
 #     at runtime only when the host process is Designer.
 # ---------------------------------------------------------------------------
-function(add_translation_delegate target output_name qt_root qt_major)
+function(add_translator_delegate target output_name qt_root qt_major)
     add_library(${target} SHARED translation_ui_delegate.cpp)
     target_include_directories(${target} PRIVATE
         "${qt_root}/include"
@@ -45,8 +45,8 @@ endif()
 
 # Painter 10.1+ / Qt6. The Qt6 ABI remains compatible across the supported
 # minor versions used by current Painter and Designer releases.
-add_translation_delegate(
-    translation_delegate_qt6 translation_delegate_qt6 "${QT6_ROOT}" 6)
+add_translator_delegate(
+    translator_delegate_qt6 translator_delegate_qt6 "${QT6_ROOT}" 6)
 
 # Painter 7.2-10.0 / Qt5.12.5. This target is deliberately a separate DLL;
 # loading a Qt6-linked delegate into a Qt5 process is unsafe.
@@ -54,8 +54,8 @@ set(QT5_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../public/sdks/qt/5.12.5/msvc2017_6
 if(NOT EXISTS "${QT5_ROOT}/lib/Qt5Widgets.lib")
     message(FATAL_ERROR "Bundled Qt5.12.5 SDK is missing")
 endif()
-add_translation_delegate(
-    translation_delegate_qt5 translation_delegate_qt5 "${QT5_ROOT}" 5)
+add_translator_delegate(
+    translator_delegate_qt5 translator_delegate_qt5 "${QT5_ROOT}" 5)
 
 # ---------------------------------------------------------------------------
 # Standalone asset term extractor (shared by both hosts)
@@ -65,11 +65,11 @@ if(NOT EXISTS "${SP_DEPS_ROOT}/lib/archive.lib")
     message(FATAL_ERROR "Bundled extractor dependencies are missing: ${SP_DEPS_ROOT}")
 endif()
 
-add_executable(translation_extractor extractor.cpp)
-target_include_directories(translation_extractor PRIVATE
+add_executable(translator_extractor extractor.cpp)
+target_include_directories(translator_extractor PRIVATE
     "${SP_DEPS_ROOT}/include"
 )
-target_link_libraries(translation_extractor PRIVATE
+target_link_libraries(translator_extractor PRIVATE
     "${SP_DEPS_ROOT}/lib/libhdf5.lib"
     "${SP_DEPS_ROOT}/lib/archive.lib"
     "${SP_DEPS_ROOT}/lib/szip-static.lib"
@@ -86,11 +86,11 @@ target_link_libraries(translation_extractor PRIVATE
     crypt32.lib
     ws2_32.lib
 )
-target_compile_definitions(translation_extractor PRIVATE
+target_compile_definitions(translator_extractor PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 if(MSVC)
-    target_compile_options(translation_extractor PRIVATE
+    target_compile_options(translator_extractor PRIVATE
         /W4 /WX /utf-8 /permissive- /Zc:__cplusplus)
-    set_property(TARGET translation_extractor PROPERTY
+    set_property(TARGET translator_extractor PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()

@@ -17,9 +17,9 @@ Layout (single source of truth for both hosts):
 One-click build (run from the repository root):
     python source/public/scripts/build_package.py
 
-The command always compiles ``translation_delegate_qt6.dll`` (shared by
-Painter 10.1+ and Designer 15+), ``translation_delegate_qt5.dll`` (Painter
-7.2-10.0) and ``translation_extractor.exe`` before creating the ZIP. A compile
+The command always compiles ``translator_delegate_qt6.dll`` (shared by
+Painter 10.1+ and Designer 15+), ``translator_delegate_qt5.dll`` (Painter
+7.2-10.0) and ``translator_extractor.exe`` before creating the ZIP. A compile
 failure stops packaging, so an old binary can never be published accidentally.
 
 The ZIP root is the plug-in content. Install it by extracting into a folder
@@ -48,9 +48,9 @@ OUT = DIST / "substance3d_chinese_translator.zip"
 README = ROOT / "README.md"
 CPP_SRC = SRC / "cpp"
 CPP_BUILD = CPP_SRC / "build"
-DELEGATE_QT6_DLL = CPP_BUILD / "Release" / "translation_delegate_qt6.dll"
-DELEGATE_QT5_DLL = CPP_BUILD / "Release" / "translation_delegate_qt5.dll"
-EXTRACTOR_EXE = CPP_BUILD / "Release" / "translation_extractor.exe"
+DELEGATE_QT6_DLL = CPP_BUILD / "Release" / "translator_delegate_qt6.dll"
+DELEGATE_QT5_DLL = CPP_BUILD / "Release" / "translator_delegate_qt5.dll"
+EXTRACTOR_EXE = CPP_BUILD / "Release" / "translator_extractor.exe"
 NATIVE_DIR = SRC / "native"
 DEPS_ROOT = PUBLIC / "sdks" / "deps"
 
@@ -185,14 +185,14 @@ def _build_native() -> None:
             if stale.suffix.lower() in (".dll", ".exe", ".old"):
                 stale.unlink(missing_ok=True)
     NATIVE_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(DELEGATE_QT6_DLL, NATIVE_DIR / "translation_delegate_qt6.dll")
-    shutil.copy2(DELEGATE_QT5_DLL, NATIVE_DIR / "translation_delegate_qt5.dll")
-    shutil.copy2(EXTRACTOR_EXE, NATIVE_DIR / "translation_extractor.exe")
+    shutil.copy2(DELEGATE_QT6_DLL, NATIVE_DIR / "translator_delegate_qt6.dll")
+    shutil.copy2(DELEGATE_QT5_DLL, NATIVE_DIR / "translator_delegate_qt5.dll")
+    shutil.copy2(EXTRACTOR_EXE, NATIVE_DIR / "translator_extractor.exe")
     print("已更新 Qt6 翻译模块（Painter 10.1+ / Designer 15+ 共用）:",
-          NATIVE_DIR / "translation_delegate_qt6.dll")
+          NATIVE_DIR / "translator_delegate_qt6.dll")
     print("已更新 Qt5 翻译模块（Painter 7.2-10.0）:",
-          NATIVE_DIR / "translation_delegate_qt5.dll")
-    print("已更新独立 C++ 词条提取器:", NATIVE_DIR / "translation_extractor.exe")
+          NATIVE_DIR / "translator_delegate_qt5.dll")
+    print("已更新独立 C++ 词条提取器:", NATIVE_DIR / "translator_extractor.exe")
 
 
 def _create_archive() -> None:
@@ -224,9 +224,9 @@ def _create_archive() -> None:
             "pluginInfo.json",
             "README.md",
             "substance3d_chinese_translator/__init__.py",
-            "native/translation_delegate_qt5.dll",
-            "native/translation_delegate_qt6.dll",
-            "native/translation_extractor.exe",
+            "native/translator_delegate_qt5.dll",
+            "native/translator_delegate_qt6.dll",
+            "native/translator_extractor.exe",
             "translations/official_assets_zh.json",
         }
         missing = required.difference(names)

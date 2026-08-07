@@ -206,6 +206,4 @@ python source/public/scripts/build_package.py
 - 插件只改变界面显示文本，不修改资产本体或项目数据。
 - 提取器处理的是用户选择的资产目录，请勿对不信任的来源目录执行提取；解析文件大小与嵌套层数均有限制，但导入恶意构造的压缩包仍有风险。
 
-## 许可证
 
-项目许可证见根目录 `LICENSE`；第三方组件许可证见 `source/substance3d_chinese_translator/THIRD_PARTY_LICENSES.txt`，各库完整许可文本随仓库捆绑于 `source/public/sdks/deps/share/`。

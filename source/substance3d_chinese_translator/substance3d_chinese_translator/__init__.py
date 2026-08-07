@@ -76,7 +76,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "translation_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.1.0"
 PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -417,12 +417,20 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
 
         credit = QtWidgets.QLabel(
             '<a href="https://space.bilibili.com/281243426" '
-            'style="color: #66aaff;">本插件由 bilibili 神说要凑数 制作，'
-            "点击可查看作者主页</a>",
+            'style="color: #66aaff;">'
+            "本插件由 bilibili 神说要凑数 制作，"
+            "点击可查看作者主页</a>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            '<a href="https://github.com/iillya/'
+            'substance3d_chinese_translator" '
+            'style="color: #66aaff;">'
+            "插件GitHub 仓库</a>",
             self,
         )
         credit.setOpenExternalLinks(True)
-        credit.setToolTip("打开 bilibili 作者主页")
+        credit.setToolTip(
+            "打开 bilibili 作者主页 / GitHub 仓库"
+        )
         layout.addWidget(credit)
 
         translation_group = QtWidgets.QFrame(self)

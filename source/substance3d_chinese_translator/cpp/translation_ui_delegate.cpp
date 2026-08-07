@@ -232,18 +232,6 @@ QString anyControlFuzzyTranslation(const QString &key) {
 // Overlay, ...) frequently exist only in scoped dictionaries such as
 // layer_blend_mode. Exact scoped lookup only; the global exact map and this
 // tier both run before any fuzzy lookup.
-QString anyControlTranslation(const QString &source) {
-    if (source.isEmpty())
-        return {};
-    for (auto it = g_controlTranslations.cbegin();
-         it != g_controlTranslations.cend(); ++it) {
-        const auto found = it.value().constFind(source);
-        if (found != it.value().cend())
-            return found.value();
-    }
-    return {};
-}
-
 QComboBox *owningComboBox(QAbstractItemView *view) {
     if (!view)
         return nullptr;
@@ -263,14 +251,30 @@ QComboBox *owningComboBox(QAbstractItemView *view) {
     return nullptr;
 }
 
-QString translated(const QString &text, bool removeMnemonic = false) {
+QString translated(const QString &text, bool removeMnemonic = false,
+                   const QString &preferredControlType = QString()) {
+    // translated() 查找顺序：
+    //   1. 控件类型（如 layer_blend_mode）若在 control_types_zh.json 中单独
+    //      列出，优先查该类型的专属词库，命中即返回；
+    //   2. 未命中再查全局词库（official/my_assets_zh.json），命中即返回；
+    //   3. 全局仍未命中，直接走模糊匹配兜底。
     if (!g_enabled)
         return {};
     QString key = text.trimmed();
     if (key.isEmpty())
         return {};
-    // An explicit user mapping may intentionally override official Chinese.
-    // Without such a mapping, the application's own localization always wins.
+    // 控件类型已识别（如 layer_blend_mode 混合模式菜单）：优先查该类型的
+    // 专属词库，未命中再走全局词库。
+    if (!preferredControlType.isEmpty()) {
+        const auto scopedIt =
+            g_controlTranslations.constFind(preferredControlType);
+        if (scopedIt != g_controlTranslations.cend()) {
+            const auto scopedFound = scopedIt.value().constFind(key);
+            if (scopedFound != scopedIt.value().cend())
+                return scopedFound.value();
+        }
+    }
+    // 全局词库：允许用户映射覆盖官方中文。
     const auto exact = g_translations.constFind(key);
     if (exact != g_translations.cend())
         return exact.value();
@@ -291,17 +295,20 @@ QString translated(const QString &text, bool removeMnemonic = false) {
         // mnemonic-stripped form that Painter actually displays.
         key.remove(u'&');
     }
+    // 处理 " *" / 助记符后：再次按 专属 → 全局 → 通用控件词库 查找。
+    if (!preferredControlType.isEmpty()) {
+        const auto scopedIt =
+            g_controlTranslations.constFind(preferredControlType);
+        if (scopedIt != g_controlTranslations.cend()) {
+            const auto scopedFound = scopedIt.value().constFind(key);
+            if (scopedFound != scopedIt.value().cend())
+                return scopedFound.value() + stateSuffix;
+        }
+    }
+    // 全局词库（处理 " *" / 助记符后）。
     const auto found = g_translations.constFind(key);
     if (found != g_translations.cend())
         return found.value() + stateSuffix;
-    // Control-scoped dictionaries are the second exact tier. Official-library
-    // asset names and layer-panel terms (Difference, Color dodge, ...) often
-    // live only in a scoped dictionary such as layer_blend_mode.
-    if (!key.isEmpty()) {
-        const QString scoped = anyControlTranslation(key);
-        if (!scoped.isNull())
-            return scoped + stateSuffix;
-    }
     if (g_fuzzyMatchEnabled) {
         const QString fuzzy = fuzzyTranslation(key);
         if (!fuzzy.isNull())
@@ -418,10 +425,12 @@ bool isLayerBlendModeMenu(QMenu *menu) {
 
 QString menuTranslation(QMenu *menu, const QString &source) {
     // The unified pipeline applies the same order everywhere: global exact,
-    // control-scoped exact, then global/scoped fuzzy. Blend-mode menus no
-    // longer skip the global dictionary.
-    (void)menu;
-    return translated(source);
+    // control-scoped exact, then global/scoped fuzzy. Blend-mode menus prefer
+    // the layer_blend_mode control-scoped dictionary over generic global
+    // terms (Normal -> 正常, not 法线).
+    const QString preferred = isLayerBlendModeMenu(menu)
+        ? QStringLiteral("layer_blend_mode") : QString();
+    return translated(source, false, preferred);
 }
 
 class TranslationItemDelegate final : public QStyledItemDelegate {
@@ -709,8 +718,6 @@ QString translateMixedPortLabel(const QString &source) {
         }
         const QString word = result.mid(i, j - i);
         QString target = g_translations.value(word);
-        if (target.isNull())
-            target = anyControlTranslation(word);
         if (target.isNull() && g_fuzzyMatchEnabled)
             target = fuzzyTranslation(word);
         if (target.isNull() && g_fuzzyMatchEnabled)
@@ -747,12 +754,7 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
     if (cached != g_fuzzyResolved.cend())
         return cached.value();
 
-    // 2. Control-scoped dictionaries are the second exact tier; the graph
-    // paints asset names that may only exist in a scoped dictionary.
-    if (target.isNull())
-        target = anyControlTranslation(source);
-
-    // 3. Tooltip full-name fallback (node titles only): the graph paints
+    // 2. Tooltip full-name fallback (node titles only): the graph paints
     // elided titles ("Name …") and identifier forms. The item tooltip carries
     // the full display name on its first line. Port labels must not use this
     // tooltip match; only node titles are allowed to fall back to it.
@@ -766,14 +768,12 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
                 fullNormalized.startsWith(normalized)) {
                 target = g_translations.value(full);
                 if (target.isNull())
-                    target = anyControlTranslation(full);
-                if (target.isNull())
                     target = g_translationsFolded.value(fullNormalized);
             }
         }
     }
 
-    // 4. Global and scoped fuzzy matching on the drawn source (case,
+    // 3. Global and scoped fuzzy matching on the drawn source (case,
     // full-width, underscore, diacritics and whitespace differences). This
     // step is gated by the plug-in option; the tooltip fallback always stays
     // active.
@@ -782,7 +782,7 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
     if (target.isNull() && g_fuzzyMatchEnabled)
         target = anyControlFuzzyTranslation(source);
 
-    // 5. Port labels that are mixed CJK/ASCII: translate the remaining
+    // 4. Port labels that are mixed CJK/ASCII: translate the remaining
     // English word segments (e.g. "（主要）Background" -> "（主要）背景").
     if (target.isNull() && portSide != 0)
         target = translateMixedPortLabel(source);
@@ -1147,11 +1147,13 @@ void translateMenu(QMenu *menu) {
     if (!menu || !g_enabled)
         return;
     const bool layerBlendMode = isLayerBlendModeMenu(menu);
+    const QString preferred = layerBlendMode
+        ? QStringLiteral("layer_blend_mode") : QString();
     for (QAction *action : menu->actions()) {
         const QString stored = action->property(kSourceProperty).toString();
         const QString source = layerBlendMode && !stored.isEmpty()
             ? stored : actionSource(action);
-        const QString result = translated(source, true);
+        const QString result = translated(source, true, preferred);
         if (!result.isNull() && action->text() != result) {
             action->setProperty(kSourceProperty, source);
             action->setText(result);

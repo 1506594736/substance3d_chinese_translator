@@ -89,7 +89,7 @@
 
 ## 在线更新
 
-"中文翻译工具"窗口内的"检查插件更新"按钮，通过 GitHub Releases API 从 `iillya/sp_chinese_translation` 查询最新正式版：
+"中文翻译工具"窗口内的"检查插件更新"按钮，通过 GitHub Releases API 从 `iillya/substance3d_chinese_translator` 查询最新正式版：
 
 - 已是最新版时提示"已是最新版本"；
 - 正在执行词条提取时点击会提示先完成或取消提取，避免文件占用；

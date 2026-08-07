@@ -756,12 +756,12 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
     // elided titles ("Name …") and identifier forms. The item tooltip carries
     // the full display name on its first line. Port labels must not use this
     // tooltip match; only node titles are allowed to fall back to it.
-    const QString normalized = normalizeForMatch(source);
     if (portSide == 0) {
         QGraphicsItem *owner = graphOwnerItem(painter);
         if (owner) {
             const QString full = graphFullTitleFromItem(owner);
             const QString fullNormalized = normalizeForMatch(full);
+            const QString normalized = normalizeForMatch(source);
             if (!fullNormalized.isEmpty() && fullNormalized != normalized &&
                 fullNormalized.startsWith(normalized)) {
                 target = g_translations.value(full);
@@ -843,6 +843,7 @@ QGraphicsItem *graphOwnerItem(QPainter *painter, qreal *differenceOut) {
     return owner;
 }
 
+#if defined(SD_TRANSLATION_GRAPH_DIAGNOSTICS)
 void recordGraphPaintType(QPainter *painter, const QString &text,
                           const char *overload, quintptr caller,
                           int flags = -1) {
@@ -890,7 +891,7 @@ void recordGraphPaintType(QPainter *painter, const QString &text,
            << "\tpen=" << painter->pen().color().name(QColor::HexArgb)
            << "\tfont_size=" << painter->font().pointSizeF()
            << "\tfont_weight=" << painter->font().weight() << "\n";
-}
+#endif
 
 // Designer's connector items draw each port label centered inside a rectangle
 // whose size and position are computed from the original text. Swapping in a
@@ -935,24 +936,30 @@ Qt::Alignment graphPortLabelAlignment(Qt::Alignment alignment,
 
 void hookedDrawPoint(QPainter *painter, const QPoint &point,
                      const QString &text) {
+#if defined(SD_TRANSLATION_GRAPH_DIAGNOSTICS)
     recordGraphPaintType(painter, text, "QPoint",
                          reinterpret_cast<quintptr>(_ReturnAddress()));
+#endif
     const QString target = graphPaintTranslation(painter, text);
     g_drawPoint(painter, point, target.isEmpty() ? text : target);
 }
 
 void hookedDrawPointF(QPainter *painter, const QPointF &point,
                       const QString &text) {
+#if defined(SD_TRANSLATION_GRAPH_DIAGNOSTICS)
     recordGraphPaintType(painter, text, "QPointF",
                          reinterpret_cast<quintptr>(_ReturnAddress()));
+#endif
     const QString target = graphPaintTranslation(painter, text);
     g_drawPointF(painter, point, target.isEmpty() ? text : target);
 }
 
 void hookedDrawRect(QPainter *painter, const QRect &rect, int flags,
                     const QString &text, QRect *boundingRect) {
+#if defined(SD_TRANSLATION_GRAPH_DIAGNOSTICS)
     recordGraphPaintType(painter, text, "QRect",
                          reinterpret_cast<quintptr>(_ReturnAddress()), flags);
+#endif
     const QString target = graphPaintTranslation(painter, text);
     g_drawRect(painter, rect, flags, target.isEmpty() ? text : target,
                boundingRect);
@@ -961,10 +968,12 @@ void hookedDrawRect(QPainter *painter, const QRect &rect, int flags,
 void hookedDrawRectFOption(QPainter *painter, const QRectF &rect,
                            const QString &text,
                            const QTextOption &option) {
+#if defined(SD_TRANSLATION_GRAPH_DIAGNOSTICS)
     recordGraphPaintType(painter, text, "QRectF/QTextOption",
                          reinterpret_cast<quintptr>(_ReturnAddress()),
                          int(option.alignment()) |
                              (int(option.textDirection()) << 16));
+#endif
     const int portSide = graphPortLabelSide(painter, rect);
     const QString target = graphPaintTranslation(painter, text, portSide);
     if (target.isEmpty()) {
@@ -983,16 +992,20 @@ void hookedDrawRectFOption(QPainter *painter, const QRectF &rect,
 }
 
 void hookedDrawXY(QPainter *painter, int x, int y, const QString &text) {
+#if defined(SD_TRANSLATION_GRAPH_DIAGNOSTICS)
     recordGraphPaintType(painter, text, "XY",
                          reinterpret_cast<quintptr>(_ReturnAddress()));
+#endif
     const QString target = graphPaintTranslation(painter, text);
     g_drawXY(painter, x, y, target.isEmpty() ? text : target);
 }
 
 void hookedDrawXYWH(QPainter *painter, int x, int y, int width, int height,
                     int flags, const QString &text, QRect *boundingRect) {
+#if defined(SD_TRANSLATION_GRAPH_DIAGNOSTICS)
     recordGraphPaintType(painter, text, "XYWH",
                          reinterpret_cast<quintptr>(_ReturnAddress()), flags);
+#endif
     const QString target = graphPaintTranslation(painter, text);
     g_drawXYWH(painter, x, y, width, height, flags,
                target.isEmpty() ? text : target, boundingRect);

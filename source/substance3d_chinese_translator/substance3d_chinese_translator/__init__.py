@@ -77,7 +77,7 @@ DELEGATE_DLL_PATH = os.path.join(
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
 PLUGIN_VERSION = "1.0.0"
-PLUGIN_REPO = "iillya/sp_chinese_translation"
+PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
 )
@@ -1320,7 +1320,7 @@ def _http_get_json(url, timeout=15):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _latest_release_info():
+def _latest_release_info_api():
     """Query the GitHub Releases API for the newest official release."""
     data = _http_get_json(PLUGIN_RELEASE_URL)
     tag = (data.get("tag_name") or "").strip()
@@ -1351,6 +1351,51 @@ def _latest_release_info():
         )
     notes = data.get("body") or ""
     return version, download_url, notes
+
+
+def _latest_release_info_via_redirect():
+    """绕过 GitHub API 限流：跟随 releases/latest 重定向，从标签构造下载地址。
+
+    网页版 releases/latest 不经过 api.github.com，不受未认证 60 次/小时限制。
+    最终地址形如 https://github.com/owner/repo/releases/tag/v1.0.0，
+    资产下载地址按 GitHub 固定规则构造。
+    """
+    try:
+        request = urllib.request.Request(
+            f"https://github.com/{PLUGIN_REPO}/releases/latest",
+            headers={
+                "User-Agent": "substance3d_chinese_translator-updater"
+            },
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            final_url = response.geturl()
+        marker = "/releases/tag/"
+        index = final_url.rfind(marker)
+        if index < 0:
+            return None
+        tag = final_url[index + len(marker):].split("?")[0].strip()
+        if not tag:
+            return None
+        version = tag.lstrip("vV")
+        download_url = (
+            f"https://github.com/{PLUGIN_REPO}/releases/download/"
+            f"{tag}/{PLUGIN_ASSET_NAME}"
+        )
+        return version, download_url, ""
+    except Exception:
+        return None
+
+
+def _latest_release_info():
+    """获取最新正式版信息；API 被限流时自动回退到网页重定向。"""
+    try:
+        return _latest_release_info_api()
+    except Exception as api_error:
+        fallback = _latest_release_info_via_redirect()
+        if fallback is not None:
+            return fallback
+        raise api_error
+
 
 class _DownloadCancelled(Exception):
     pass
@@ -1581,11 +1626,19 @@ def _check_updates(parent=None):
         # are loaded.
         _apply_update_now(destination, parent)
     except Exception as exc:
+        detail = str(exc)
+        if "403" in detail or "rate limit" in detail.casefold():
+            hint = (
+                "GitHub API 触发限流（未登录每小时 60 次）。\n"
+                "插件已自动尝试通过网页重定向获取版本信息，"
+                "若仍失败请稍后再试。"
+            )
+        else:
+            hint = "请确认网络可访问 GitHub，稍后再试。"
         QtWidgets.QMessageBox.warning(
             parent,
             "检查更新失败",
-            f"无法获取最新版本：\n{exc}\n\n"
-            "请确认网络可访问 GitHub，稍后再试。",
+            f"无法获取最新版本：\n{exc}\n\n{hint}",
         )
 
 

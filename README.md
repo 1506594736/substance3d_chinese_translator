@@ -26,8 +26,8 @@
 
 同一个发布包 `substance3d_chinese_translator.zip` 适用于两个软件，解压到各自的插件目录即可：
 
-- **Substance 3D Painter**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Painter\python\plugins`，得到 `...\python\plugins\substance3d_chinese_translator` 文件夹；启动后打开菜单 `Python`，勾选"中文翻译补全插件"。
-- **Substance 3D Designer**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Designer\python\sduserplugins`，得到 `...\python\sduserplugins\substance3d_chinese_translator` 文件夹；启动后插件自动加载，菜单栏出现"中文翻译工具"。
+- **Substance 3D Painter**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Painter\python\plugins`，此时应该有 `README.md` 在 `...\python\plugins\substance3d_chinese_translator\` 文件夹中，启动后打开菜单 `Python`，勾选"中文翻译补全插件"。
+- **Substance 3D Designer**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Designer\python\sduserplugins`，此时应该有 `README.md` 在 `...\python\sduserplugins\substance3d_chinese_translator` 文件夹，启动后插件自动加载，菜单栏出现"中文翻译工具"。
 
 手动安装或替换插件目录前请先完全退出对应软件；插件自带的"检查插件更新"无需退出。
 
@@ -65,7 +65,7 @@
 
 - 递归扫描资产目录，跳过 `.` 开头的隐藏目录（如 `.git`）与 `__pycache__`、`_unpacked_assets`；
 - 从 7z/ZIP/HDF5 容器提取 XML 元数据词条，并展开嵌套容器（每资产最多 128 层，防压缩炸弹）；
-- 解析 `.sbs`（含无显式标签时以参数 `identifier` 作为参数名）、`.spsm` 智能材质、`.sppr` 预设、GLSL 注解等；
+- 解析 `.sbs`（含无显式标签时以参数 `identifier` 作为参数名）、`.spsm` 智能材质、`.sppr` 预设、GLSL 注解等。
 - 提取 `label`、`text`、`group`、`description`、`category`、`keywords`、`values` 等元数据。
 
 以下内容不会被提取：
@@ -73,7 +73,7 @@
 - 已含中文的原文；
 - 纯整数、小数、科学计数法和百分比数值；
 - 内部资源引用 URL（`?version=` 形式）；
-- 插件现有词库中已存在的原文；
+- 插件现有词库中已存在的原文。
 - 超过大小上限的解析文件（XML/GLSL/preset.bin 64 MB，HDF5 数据集 256 MB）。
 
 每个文件无论成败都会输出到面板日志；失败项同时写入输出文件旁的 `_failures.txt`。

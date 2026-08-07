@@ -401,9 +401,7 @@ def _is_library_tree(view):
 class ChineseTranslationToolDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(
-            f"中文翻译工具 v{PLUGIN_VERSION} · 本插件由 bilibili 神说要凑数 制作"
-        )
+        self.setWindowTitle(f"中文翻译工具 v{PLUGIN_VERSION}")
         self.setObjectName("substance3d_chinese_translator_tool")
         self.setMinimumSize(780, 640)
         self.setSizeGripEnabled(True)

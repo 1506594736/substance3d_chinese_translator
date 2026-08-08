@@ -117,25 +117,25 @@
 }
 ```
 
-限定到特定控件类型的词条放在 `control_types` 中：
+专项词库（控件 ID 专属）与全局词库格式相同，放在 `control_ids_zh.json`，
+键为完整控件 ID（`自身类名 | 自身 objectName | 原英文`），
+用于让同一个原文在不同控件下显示不同的译文：
 
 ```json
 {
   "$schema": "sp-translation-v1",
-  "id": "control-specific-translations",
+  "id": "control-id-specific-translations",
   "language": "zh-CN",
-  "control_types": {
-    "layer_blend_mode": {
-      "translations": {
-        "Normal": "正常",
-        "Multiply": "正片叠底"
-      }
-    }
+  "translations": {
+    "QToolButton | blendingMode | Normal": "正常",
+    "QToolButton | blendingMode | Multiply": "正片叠底"
   }
 }
 ```
 
-词库要求：文件名以 `_zh.json` 结尾、UTF-8 编码、`$schema` 为 `sp-translation-v1`、`language` 为 `zh-CN`；空译文不会加载（可作为待翻译占位符）。修改词库后重新加载插件或重启软件生效。
+翻译查找顺序：① 控件 ID 专属词库（control_ids_zh.json）→ ② 全局词库 → ③ 模糊匹配兜底。
+
+词库要求：文件名以 `_zh.json` 结尾、UTF-8 编码、`$schema` 为 `sp-translation-v1`、`language` 为 `zh-CN`；空译文不会加载（可作为待翻译占位符）。修改词库后重新加载插件或重启软件生效。“更改翻译”窗口勾选“保存到专项词库（control_ids_zh.json）”时，新译文以完整控件 ID 为键写入该文件。
 
 ## 工作原理
 

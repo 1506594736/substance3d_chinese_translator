@@ -26,9 +26,11 @@
 #include <QtGui/QTextOption>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QAbstractScrollArea>
 #include <QtWidgets/QAbstractSlider>
 #include <QtWidgets/QAbstractSpinBox>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDockWidget>
 #include <QtWidgets/QDialog>
@@ -38,6 +40,7 @@
 #include <QtWidgets/QGraphicsObject>
 #include <QtWidgets/QGraphicsScene>
 #include <QtWidgets/QGraphicsView>
+#include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListView>
@@ -46,6 +49,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStyledItemDelegate>
 #include <QtWidgets/QTabBar>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QToolButton>
 #include <QtWidgets/QToolTip>
 #include <QtWidgets/QTreeView>
@@ -61,8 +65,10 @@ namespace {
 QHash<QString, QString> g_translations;
 QHash<QString, QString> g_originals;
 QHash<QString, QHash<QString, QString>> g_controlTranslations;
+QHash<QString, QString> g_idTranslations;
 QHash<QString, QString> g_translationPaths;
 QString g_fallbackPath;
+QString g_idTranslationPath;
 QPointer<QWidget> g_originalTooltipOwner;
 bool g_enabled = true;
 bool g_translateLayersPanel = true;
@@ -89,6 +95,15 @@ bool isDesignerHost() {
 }
 
 void translateWidget(QWidget *widget);
+QString controlUniqueId(QWidget *widget, const QString &sourceText);
+
+// 翻译路径的控件 ID：词库为空时直接返回空，省去每次绘制都计算 ID 的开销；
+// 更改翻译窗口的 Ctrl+右键路径仍始终计算完整 ID。
+QString translationControlId(QWidget *widget, const QString &sourceText) {
+    return g_idTranslations.isEmpty()
+               ? QString()
+               : controlUniqueId(widget, sourceText);
+}
 
 bool containsCjk(const QString &text) {
     for (const QChar character : text) {
@@ -251,28 +266,35 @@ QComboBox *owningComboBox(QAbstractItemView *view) {
     return nullptr;
 }
 
+// Paint 等高频路径只沿父链找宿主，不做 allWidgets 全量扫描，避免每次
+// 重绘列表都遍历全部控件；Ctrl+右键的精确归属仍走 owningComboBox()。
+QComboBox *owningComboBoxFast(QAbstractItemView *view) {
+    if (!view)
+        return nullptr;
+    for (QObject *current = view; current; current = current->parent()) {
+        if (auto *combo = qobject_cast<QComboBox *>(current))
+            return combo;
+    }
+    return nullptr;
+}
+
 QString translated(const QString &text, bool removeMnemonic = false,
-                   const QString &preferredControlType = QString()) {
+                   const QString &controlId = QString()) {
     // translated() 查找顺序：
-    //   1. 控件类型（如 layer_blend_mode）若在 control_types_zh.json 中单独
-    //      列出，优先查该类型的专属词库，命中即返回；
-    //   2. 未命中再查全局词库（official/my_assets_zh.json），命中即返回；
+    //   1. 先识别控件 ID（自身类名 | 自身 objectName | 原英文），在
+    //      id_types_zh.json 中按完整 ID 键精确查找，命中即返回；
+    //   2. 全局词库（official/my_assets_zh.json）命中即返回；
     //   3. 全局仍未命中，直接走模糊匹配兜底。
     if (!g_enabled)
         return {};
     QString key = text.trimmed();
     if (key.isEmpty())
         return {};
-    // 控件类型已识别（如 layer_blend_mode 混合模式菜单）：优先查该类型的
-    // 专属词库，未命中再走全局词库。
-    if (!preferredControlType.isEmpty()) {
-        const auto scopedIt =
-            g_controlTranslations.constFind(preferredControlType);
-        if (scopedIt != g_controlTranslations.cend()) {
-            const auto scopedFound = scopedIt.value().constFind(key);
-            if (scopedFound != scopedIt.value().cend())
-                return scopedFound.value();
-        }
+    // 1. 控件 ID 专属词库（id_types_zh.json，键为完整 ID 字符串）。
+    if (!controlId.isEmpty()) {
+        const auto idHit = g_idTranslations.constFind(controlId);
+        if (idHit != g_idTranslations.cend())
+            return idHit.value();
     }
     // 全局词库：允许用户映射覆盖官方中文。
     const auto exact = g_translations.constFind(key);
@@ -294,16 +316,6 @@ QString translated(const QString &text, bool removeMnemonic = false,
         // Prefer the exact dictionary key (e.g. "R&D"); fall back to the
         // mnemonic-stripped form that Painter actually displays.
         key.remove(u'&');
-    }
-    // 处理 " *" / 助记符后：再次按 专属 → 全局 → 通用控件词库 查找。
-    if (!preferredControlType.isEmpty()) {
-        const auto scopedIt =
-            g_controlTranslations.constFind(preferredControlType);
-        if (scopedIt != g_controlTranslations.cend()) {
-            const auto scopedFound = scopedIt.value().constFind(key);
-            if (scopedFound != scopedIt.value().cend())
-                return scopedFound.value() + stateSuffix;
-        }
     }
     // 全局词库（处理 " *" / 助记符后）。
     const auto found = g_translations.constFind(key);
@@ -424,13 +436,9 @@ bool isLayerBlendModeMenu(QMenu *menu) {
 }
 
 QString menuTranslation(QMenu *menu, const QString &source) {
-    // The unified pipeline applies the same order everywhere: global exact,
-    // control-scoped exact, then global/scoped fuzzy. Blend-mode menus prefer
-    // the layer_blend_mode control-scoped dictionary over generic global
-    // terms (Normal -> 正常, not 法线).
-    const QString preferred = isLayerBlendModeMenu(menu)
-        ? QStringLiteral("layer_blend_mode") : QString();
-    return translated(source, false, preferred);
+    // 统一顺序：控件 ID（id_types_zh.json）→ 全局词库 → 模糊兜底。
+    return translated(source, false,
+                      translationControlId(menu, source));
 }
 
 class TranslationItemDelegate final : public QStyledItemDelegate {
@@ -439,7 +447,7 @@ public:
                                      bool compactGrid = false,
                                      bool layersPanel = false)
         : QStyledItemDelegate(view), compactGrid_(compactGrid),
-          layersPanel_(layersPanel) {}
+          layersPanel_(layersPanel), view_(view) {}
 
     QString displayText(const QVariant &value, const QLocale &locale) const override {
         if (g_enabled && (!layersPanel_ || g_translateLayersPanel) &&
@@ -448,7 +456,9 @@ public:
 #else
             value.userType() == QMetaType::QString) {
 #endif
-            const QString result = translated(value.toString());
+            const QString text = value.toString();
+            const QString result = translated(
+                text, false, translationControlId(view_, text));
             if (!result.isNull())
                 return result;
         }
@@ -539,6 +549,7 @@ public:
 private:
     bool compactGrid_ = false;
     bool layersPanel_ = false;
+    QAbstractItemView *view_ = nullptr;
 };
 
 int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false,
@@ -758,6 +769,7 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
     // elided titles ("Name …") and identifier forms. The item tooltip carries
     // the full display name on its first line. Port labels must not use this
     // tooltip match; only node titles are allowed to fall back to it.
+    QString cacheKey = source;
     if (portSide == 0) {
         QGraphicsItem *owner = graphOwnerItem(painter);
         if (owner) {
@@ -766,6 +778,13 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
             const QString normalized = normalizeForMatch(source);
             if (!fullNormalized.isEmpty() && fullNormalized != normalized &&
                 fullNormalized.startsWith(normalized)) {
+                // 同一绘制文本可能属于不同节点（完整名不同），缓存键必须
+                // 带上完整名，避免串用其他节点的 tooltip 匹配结果。
+                cacheKey = source + QChar(0x01) + fullNormalized;
+                const auto tooltipCached =
+                    g_fuzzyResolved.constFind(cacheKey);
+                if (tooltipCached != g_fuzzyResolved.cend())
+                    return tooltipCached.value();
                 target = g_translations.value(full);
                 if (target.isNull())
                     target = g_translationsFolded.value(fullNormalized);
@@ -787,7 +806,7 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
     if (target.isNull() && portSide != 0)
         target = translateMixedPortLabel(source);
 
-    g_fuzzyResolved.insert(source, target);
+    g_fuzzyResolved.insert(cacheKey, target);
     return target;
 }
 
@@ -1147,13 +1166,12 @@ void translateMenu(QMenu *menu) {
     if (!menu || !g_enabled)
         return;
     const bool layerBlendMode = isLayerBlendModeMenu(menu);
-    const QString preferred = layerBlendMode
-        ? QStringLiteral("layer_blend_mode") : QString();
     for (QAction *action : menu->actions()) {
         const QString stored = action->property(kSourceProperty).toString();
         const QString source = layerBlendMode && !stored.isEmpty()
             ? stored : actionSource(action);
-        const QString result = translated(source, true, preferred);
+        const QString result = translated(source, true,
+                                          translationControlId(menu, source));
         if (!result.isNull() && action->text() != result) {
             action->setProperty(kSourceProperty, source);
             action->setText(result);
@@ -1228,7 +1246,8 @@ void translateWidget(QWidget *widget) {
             return;
         }
         const QString source = sourceForObject(button, button->text());
-        const QString result = translated(source, true);
+        const QString result = translated(source, true,
+                                          translationControlId(widget, source));
         if (!result.isNull() && button->text() != result) {
             button->setProperty(kSourceProperty, source);
             button->setText(result);
@@ -1237,7 +1256,8 @@ void translateWidget(QWidget *widget) {
     }
     if (auto *label = qobject_cast<QLabel *>(widget)) {
         const QString source = sourceForObject(label, label->text());
-        const QString result = translated(source, true);
+        const QString result = translated(source, true,
+                                          translationControlId(widget, source));
         if (!result.isNull() && label->text() != result) {
             label->setProperty(kSourceProperty, source);
             label->setText(result);
@@ -1246,7 +1266,8 @@ void translateWidget(QWidget *widget) {
     }
     if (auto *group = qobject_cast<QGroupBox *>(widget)) {
         const QString source = sourceForObject(group, group->title());
-        const QString result = translated(source);
+        const QString result = translated(source, false,
+                                          translationControlId(widget, source));
         if (!result.isNull() && group->title() != result) {
             group->setProperty(kSourceProperty, source);
             group->setTitle(result);
@@ -1261,7 +1282,8 @@ void translateWidget(QWidget *widget) {
         resizeStringList(sources, combo->count());
         for (int i = 0; i < combo->count(); ++i) {
             const QString source = comboSourceAt(combo, i);
-            const QString result = translated(source);
+            const QString result = translated(source, false,
+                                              translationControlId(combo, source));
             if (!result.isNull() && combo->itemText(i) != result) {
                 sources[i] = source;
                 combo->setItemText(i, result);
@@ -1285,7 +1307,8 @@ void translateWidget(QWidget *widget) {
                     g_originals.value(displayed) == stored)
                     source = stored;
             }
-            const QString result = translated(source);
+            const QString result = translated(source, false,
+                                              translationControlId(tabs, source));
             if (!result.isNull() && tabs->tabText(i) != result) {
                 sources[i] = source;
                 tabs->setTabText(i, result);
@@ -1296,7 +1319,8 @@ void translateWidget(QWidget *widget) {
     }
     if (auto *dock = qobject_cast<QDockWidget *>(widget)) {
         const QString source = sourceForObject(dock, dock->windowTitle());
-        const QString result = translated(source);
+        const QString result = translated(source, false,
+                                          translationControlId(widget, source));
         if (!result.isNull() && dock->windowTitle() != result) {
             dock->setProperty(kSourceProperty, source);
             dock->setWindowTitle(result);
@@ -1305,7 +1329,8 @@ void translateWidget(QWidget *widget) {
     }
     if (auto *lineEdit = qobject_cast<QLineEdit *>(widget)) {
         const QString source = sourceForObject(lineEdit, lineEdit->placeholderText());
-        const QString result = translated(source);
+        const QString result = translated(source, false,
+                                          translationControlId(widget, source));
         if (!result.isNull() && lineEdit->placeholderText() != result) {
             lineEdit->setProperty(kSourceProperty, source);
             lineEdit->setPlaceholderText(result);
@@ -1367,7 +1392,9 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
                     combo->property(kComboSourcesProperty).toStringList();
                 if (row >= 0 && row < sources.size()) {
                     const QString source = sources.at(row);
-                    const QString expected = translated(source);
+                    const QString expected = translated(
+                        source, false,
+                        translationControlId(combo, source));
                     if (!source.isEmpty() && expected == displayed)
                         return source;
                 }
@@ -1623,45 +1650,91 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     return displayed;
 }
 
-QString controlTypeAt(QWidget *widget) {
+// 内部子控件归属到宿主控件：下拉弹出项 -> QComboBox，滚动/列表视口 ->
+// 所属视图，数字框编辑行/箭头 -> QAbstractSpinBox，选项卡条 -> QTabWidget，
+// 表头 -> 所属视图，菜单 -> 触发它的父控件。
+QWidget *resolveControlOwner(QWidget *widget) {
     if (!widget)
-        return QStringLiteral("未知控件");
-    const QString className =
-        QString::fromLatin1(widget->metaObject()->className());
-
-    if (qobject_cast<QMenu *>(widget))
-        return QStringLiteral("菜单项（%1 / QAction）").arg(className);
-    if (auto *view = qobject_cast<QAbstractItemView *>(widget->parentWidget())) {
-        if (widget == view->viewport()) {
-            const QString viewClass =
-                QString::fromLatin1(view->metaObject()->className());
-            if (owningComboBox(view))
-                return QStringLiteral("下拉菜单选项（%1）").arg(viewClass);
-            if (isInsideLayersPanel(view))
-                return QStringLiteral("图层名称（%1）").arg(viewClass);
-            if (isResourceFolderTree(view))
-                return QStringLiteral("资产目录项（%1）").arg(viewClass);
-            return QStringLiteral("列表项目（%1）").arg(viewClass);
+        return nullptr;
+    // 下拉框的弹出列表视图本身（QComboBoxListView）也归属到所属 QComboBox。
+    if (auto *view = qobject_cast<QAbstractItemView *>(widget)) {
+        for (QObject *current = view; current; current = current->parent()) {
+            if (auto *combo = qobject_cast<QComboBox *>(current))
+                return combo;
         }
     }
-    if (qobject_cast<QAbstractButton *>(widget))
-        return QStringLiteral("按钮（%1）").arg(className);
-    if (qobject_cast<QLabel *>(widget))
-        return QStringLiteral("文本标签（%1）").arg(className);
-    if (qobject_cast<QGroupBox *>(widget))
-        return QStringLiteral("分组标题（%1）").arg(className);
-    if (qobject_cast<QComboBox *>(widget))
-        return QStringLiteral("下拉框（%1）").arg(className);
-    if (qobject_cast<QTabBar *>(widget))
-        return QStringLiteral("选项卡（%1）").arg(className);
-    if (qobject_cast<QDockWidget *>(widget))
-        return QStringLiteral("面板标题（%1）").arg(className);
-    return QStringLiteral("界面控件（%1）").arg(className);
+    if (auto *view = qobject_cast<QAbstractItemView *>(
+            widget->parentWidget())) {
+        if (widget == view->viewport()) {
+            if (QComboBox *combo = owningComboBox(view))
+                return combo;
+            return view;
+        }
+    }
+    if (auto *scroll = qobject_cast<QAbstractScrollArea *>(
+            widget->parentWidget())) {
+        if (widget == scroll->viewport())
+            return scroll;
+    }
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(
+            widget->parentWidget())) {
+        if (auto *lineEdit = qobject_cast<QLineEdit *>(widget)) {
+            if (lineEdit->objectName() ==
+                QStringLiteral("qt_spinbox_lineedit"))
+                return spin;
+        } else if (auto *button = qobject_cast<QToolButton *>(widget)) {
+            const QString name = button->objectName();
+            if (name == QStringLiteral("qt_spinbox_up") ||
+                name == QStringLiteral("qt_spinbox_down"))
+                return spin;
+        }
+    }
+    if (auto *tabBar = qobject_cast<QTabBar *>(widget)) {
+        if (auto *tabs =
+                qobject_cast<QTabWidget *>(tabBar->parentWidget()))
+            return tabs;
+    }
+    if (auto *header = qobject_cast<QHeaderView *>(widget)) {
+        if (auto *itemView =
+                qobject_cast<QAbstractItemView *>(header->parentWidget()))
+            return itemView;
+    }
+    if (auto *menu = qobject_cast<QMenu *>(widget)) {
+        if (menu->parentWidget())
+            return menu->parentWidget();
+    }
+    return widget;
+}
+
+QString controlUniqueId(QWidget *widget, const QString &sourceText) {
+    // 返回用于生成稳定 ID 的规范字符串：自身类名 | 自身 objectName | 原英文，
+    // 哪一项没有就用 None 占位。内部子控件先归属到宿主控件，保证收起/展开
+    // 等不同点法识别到同一个 ID。
+    if (!widget)
+        return {};
+
+    QWidget *identity = resolveControlOwner(widget);
+    const QString ownClassName =
+        QString::fromLatin1(identity->metaObject()->className());
+    const QString ownObjectName = identity->objectName();
+    // 菜单/按钮文本可能带助记符 "&"，词库键统一用去掉助记符的原文。
+    QString normalizedSource = sourceText;
+    normalizedSource.remove(u'&');
+
+    auto orNone = [](const QString &value) {
+        return value.isEmpty() ? QStringLiteral("None") : value;
+    };
+    return orNone(ownClassName) + QStringLiteral(" | ")
+        + orNone(ownObjectName) + QStringLiteral(" | ")
+        + orNone(normalizedSource);
 }
 
 bool saveTranslation(const QString &source, const QString &target,
-                     const QString &controlType, QString *error) {
-    const QString translationPath = g_translationPaths.value(source, g_fallbackPath);
+                     const QString &controlType, QString *error,
+                     const QString &fixedPath = QString()) {
+    const QString translationPath = fixedPath.isEmpty()
+        ? g_translationPaths.value(source, g_fallbackPath)
+        : fixedPath;
     if (translationPath.isEmpty()) {
         if (error)
             *error = QStringLiteral("未配置可写入的翻译文件。");
@@ -1839,12 +1912,58 @@ void setTranslateLayersPanel(bool enabled) {
     restoreLayersPanelOriginals();
 }
 
-void editTranslation(const QString &source, const QString &controlType,
+// 主窗口怎么设置 UI 风格，所有插件弹窗就怎么设置：统一继承主窗口的调色板、
+// 样式表、字体和图标，保证与软件主界面外观一致。
+QWidget *hostStyleWindow(QWidget *reference) {
+    QWidget *host = reference ? reference->window() : nullptr;
+    if (!host)
+        host = QApplication::activeWindow();
+    if (!host) {
+        const QWidgetList topLevel = QApplication::topLevelWidgets();
+        for (QWidget *widget : topLevel) {
+            if (widget->isVisible()) {
+                host = widget;
+                break;
+            }
+        }
+    }
+    return host;
+}
+
+void applyHostWindowStyle(QWidget *window, QWidget *reference) {
+    if (!window)
+        return;
+    QWidget *host = hostStyleWindow(reference);
+    if (host) {
+        window->setPalette(host->palette());
+        window->setStyleSheet(host->styleSheet());
+        window->setFont(host->font());
+        window->setWindowIcon(host->windowIcon());
+    }
+    if (window->windowIcon().isNull())
+        window->setWindowIcon(QApplication::windowIcon());
+}
+
+void showHostMessage(QWidget *parent, const QString &title,
+                     const QString &text,
+                     QMessageBox::Icon icon = QMessageBox::Information) {
+    QMessageBox box(parent);
+    box.setWindowTitle(title);
+    box.setText(text);
+    box.setIcon(icon);
+    applyHostWindowStyle(&box, parent);
+    box.exec();
+}
+
+void editTranslation(const QString &source, const QString &uniqueId,
                      QWidget *parent) {
     if (source.isEmpty())
         return;
     QString scopedControlType;
-    QString current = g_translations.value(source);
+    QString current = g_idTranslations.value(uniqueId);
+    const bool currentFromId = !current.isNull();
+    if (current.isNull())
+        current = g_translations.value(source);
     if (current.isNull()) {
         for (auto it = g_controlTranslations.cbegin();
              it != g_controlTranslations.cend(); ++it) {
@@ -1867,33 +1986,32 @@ void editTranslation(const QString &source, const QString &controlType,
     QDialog dialog(dialogParent);
     dialog.setWindowTitle(QStringLiteral("更改翻译"));
     dialog.setMinimumWidth(460);
-    QPalette dialogPalette = QApplication::palette();
-    const QColor windowColor = dialogPalette.color(QPalette::Window);
-    const QColor editorColor = windowColor.lightness() < 128
-        ? windowColor.lighter(118) : windowColor.darker(104);
-    dialogPalette.setColor(QPalette::Base, editorColor);
-    dialogPalette.setColor(QPalette::AlternateBase, editorColor);
-    dialog.setPalette(dialogPalette);
-    dialog.setAutoFillBackground(true);
+    applyHostWindowStyle(&dialog, dialogParent);
 
     auto *layout = new QVBoxLayout(&dialog);
     auto *form = new QFormLayout();
     auto *sourceEdit = new QLineEdit(source, &dialog);
     auto *currentEdit = new QLineEdit(current, &dialog);
     auto *targetEdit = new QLineEdit(current, &dialog);
-    auto *typeEdit = new QLineEdit(controlType, &dialog);
+    auto *uniqueIdEdit = new QLineEdit(uniqueId, &dialog);
     sourceEdit->setReadOnly(true);
     currentEdit->setReadOnly(true);
-    typeEdit->setReadOnly(true);
+    uniqueIdEdit->setReadOnly(true);
     sourceEdit->setObjectName(QStringLiteral("sp_translation_source"));
     currentEdit->setObjectName(QStringLiteral("sp_translation_current"));
     targetEdit->setObjectName(QStringLiteral("sp_translation_target"));
-    typeEdit->setObjectName(QStringLiteral("sp_translation_control_type"));
-    form->addRow(QStringLiteral("控件类型："), typeEdit);
+    uniqueIdEdit->setObjectName(QStringLiteral("sp_translation_unique_id"));
+    form->addRow(QStringLiteral("ID："), uniqueIdEdit);
     form->addRow(QStringLiteral("原英文："), sourceEdit);
     form->addRow(QStringLiteral("当前翻译："), currentEdit);
     form->addRow(QStringLiteral("新翻译："), targetEdit);
     layout->addLayout(form);
+
+    auto *idCheck = new QCheckBox(
+        QStringLiteral("保存到专项词库（control_ids_zh.json）"), &dialog);
+    idCheck->setObjectName(QStringLiteral("sp_translation_save_to_id"));
+    idCheck->setChecked(currentFromId);
+    layout->addWidget(idCheck);
 
     if (containsCjk(source)) {
         auto *warning = new QLabel(
@@ -1921,22 +2039,37 @@ void editTranslation(const QString &source, const QString &controlType,
     if (dialog.exec() != QDialog::Accepted)
         return;
     const QString target = targetEdit->text().trimmed();
-    if (target.isEmpty() || target == current)
-        return;
-
-    QString error;
-    if (!saveTranslation(source, target, scopedControlType, &error)) {
-        QMessageBox::critical(parent, QStringLiteral("保存翻译失败"), error);
+    if (target.isEmpty() || target == current) {
+        showHostMessage(parent, QStringLiteral("提示"),
+                        QStringLiteral("翻译未改变，未写入词库"));
         return;
     }
 
-    // Keep historical reverse entries until restart so widgets currently
-    // showing an older translation can still resolve back to the source.
-    if (scopedControlType.isEmpty())
-        g_translations.insert(source, target);
-    else
-        g_controlTranslations[scopedControlType].insert(source, target);
-    g_originals.insert(target, source);
+    QString error;
+    const bool saveToId = idCheck->isChecked() && !uniqueId.isEmpty();
+    if (saveToId) {
+        // 保存到专项词库：以完整控件 ID 为键写入 control_ids_zh.json。
+        if (!saveTranslation(uniqueId, target, QString(), &error,
+                             g_idTranslationPath)) {
+            showHostMessage(parent, QStringLiteral("保存翻译失败"), error,
+                            QMessageBox::Critical);
+            return;
+        }
+        g_idTranslations.insert(uniqueId, target);
+    } else {
+        if (!saveTranslation(source, target, scopedControlType, &error)) {
+            showHostMessage(parent, QStringLiteral("保存翻译失败"), error,
+                            QMessageBox::Critical);
+            return;
+        }
+        // Keep historical reverse entries until restart so widgets currently
+        // showing an older translation can still resolve back to the source.
+        if (scopedControlType.isEmpty())
+            g_translations.insert(source, target);
+        else
+            g_controlTranslations[scopedControlType].insert(source, target);
+        g_originals.insert(target, source);
+    }
     refreshTranslatedViews();
 }
 
@@ -1961,18 +2094,21 @@ protected:
             if (menu && mouse->button() == Qt::RightButton &&
                 (mouse->modifiers() & Qt::ControlModifier)) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-                const QString source = contextSourceAt(menu, mouse->position().toPoint());
+                const QPoint mousePos = mouse->position().toPoint();
 #else
-                const QString source = contextSourceAt(menu, mouse->pos());
+                const QPoint mousePos = mouse->pos();
 #endif
+                const QString source = contextSourceAt(menu, mousePos);
                 if (!source.isEmpty()) {
-                    const QString controlType = controlTypeAt(menu);
+                    const QString uniqueId = controlUniqueId(menu, source);
                     QPointer<QWidget> safeWindow(menu->window());
-                    QTimer::singleShot(0, qApp, [source, controlType, safeWindow]() {
+                    QTimer::singleShot(
+                        0, qApp,
+                        [source, uniqueId, safeWindow]() {
                         QWidget *parent = safeWindow.data();
                         if (!parent)
                             parent = QApplication::activeWindow();
-                        editTranslation(source, controlType, parent);
+                        editTranslation(source, uniqueId, parent);
                     });
                     event->accept();
                     return true;
@@ -1990,11 +2126,13 @@ protected:
             const QString source = contextSourceAt(widget, context->pos());
             if (source.isEmpty())
                 return false;
-            const QString controlType = controlTypeAt(widget);
+            const QString uniqueId = controlUniqueId(widget, source);
             QPointer<QWidget> safeWidget(widget);
-            QTimer::singleShot(0, qApp, [source, controlType, safeWidget]() {
+            QTimer::singleShot(
+                0, qApp,
+                [source, uniqueId, safeWidget]() {
                 if (safeWidget)
-                    editTranslation(source, controlType, safeWidget.data());
+                    editTranslation(source, uniqueId, safeWidget.data());
             });
             event->accept();
             return true;
@@ -2029,7 +2167,7 @@ protected:
                     translateWidget(widget);
                 } else if (auto *view =
                                qobject_cast<QAbstractItemView *>(widget)) {
-                    if (QComboBox *combo = owningComboBox(view))
+                    if (QComboBox *combo = owningComboBoxFast(view))
                         translateWidget(combo);
                 }
             }
@@ -2082,11 +2220,17 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_path(
     g_fallbackPath = path ? QString::fromWCharArray(path) : QString();
 }
 
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_id_path(
+    const wchar_t *path) {
+    g_idTranslationPath = path ? QString::fromWCharArray(path) : QString();
+}
+
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_clear_translations() {
     g_translations.clear();
     g_originals.clear();
     g_controlTranslations.clear();
     g_controlTranslationsFolded.clear();
+    g_idTranslations.clear();
     g_translationPaths.clear();
     g_fuzzyResolved.clear();
     g_translationsFolded.clear();
@@ -2141,6 +2285,14 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translatio
                                                         targetString);
         g_controlTranslationsFolded[controlTypeString].insert(
             normalizeForMatch(sourceString), targetString);
+    }
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_id_translation(
+    const wchar_t *id, const wchar_t *target) {
+    if (id && target) {
+        g_idTranslations.insert(QString::fromWCharArray(id),
+                                QString::fromWCharArray(target));
     }
 }
 

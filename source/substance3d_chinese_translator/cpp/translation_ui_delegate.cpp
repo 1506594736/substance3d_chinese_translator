@@ -1961,7 +1961,6 @@ void editTranslation(const QString &source, const QString &uniqueId,
         return;
     QString scopedControlType;
     QString current = g_idTranslations.value(uniqueId);
-    const bool currentFromId = !current.isNull();
     if (current.isNull())
         current = g_translations.value(source);
     if (current.isNull()) {
@@ -2010,7 +2009,6 @@ void editTranslation(const QString &source, const QString &uniqueId,
     auto *idCheck = new QCheckBox(
         QStringLiteral("保存到专项词库（control_ids_zh.json）"), &dialog);
     idCheck->setObjectName(QStringLiteral("sp_translation_save_to_id"));
-    idCheck->setChecked(currentFromId);
     layout->addWidget(idCheck);
 
     if (containsCjk(source)) {

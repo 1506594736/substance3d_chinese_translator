@@ -282,7 +282,7 @@ QComboBox *owningComboBoxFast(QAbstractItemView *view) {
 QString translated(const QString &text, bool removeMnemonic = false,
                    const QString &controlId = QString()) {
     // translated() 查找顺序：
-    //   1. 先识别控件 ID（自身类名||自身 objectName||原英文），在
+//   1. 先识别控件 ID（上级类名||自身类名||自身 objectName||原文），在
     //      id_types_zh.json 中按完整 ID 键精确查找，命中即返回；
     //   2. 全局词库（official/my_assets_zh.json）命中即返回；
     //   3. 全局仍未命中，直接走模糊匹配兜底。
@@ -296,10 +296,12 @@ QString translated(const QString &text, bool removeMnemonic = false,
         const auto idHit = g_idTranslations.constFind(controlId);
         if (idHit != g_idTranslations.cend())
             return idHit.value();
-        // 跳过翻译标记：键为“类名||objectName||*”（* 表示任意原文）、
-        // 值为 "_skip_"，
+        // 跳过翻译标记：键为“上级类名||自身类名||objectName||*”
+        // （* 表示任意原文）、值为 "_skip_"，
         // 表示该控件下任何原文都不翻译（例如导入对话框的
-        // QListWidget||files，避免把 texture 改成纹理破坏导入类型键）。
+        // QListWidget||QMenu||None||*，避免把 texture 改成纹理破坏导入类型键）。
+        // ID 固定为“上级类名||自身类名||objectName||原文”，
+        // 原文在最后一段，通配替换最后一段即可。
         const int lastSeparator =
             controlId.lastIndexOf(QStringLiteral("||"));
         if (lastSeparator > 0) {
@@ -1628,8 +1630,11 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
                         !sources.at(index.row()).isEmpty())
                         return sources.at(index.row());
                     const auto original = g_originals.constFind(displayed);
-                    return original == g_originals.cend()
-                        ? QString() : original.value();
+                    if (original != g_originals.cend())
+                        return original.value();
+                    // 原文已是中文（或未命中词库）时也允许弹窗，
+                    // 否则下拉框弹出项 Ctrl+右键会没有反应。
+                    return displayed;
                 }
                 return displayed;
             }
@@ -1694,73 +1699,22 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     return displayed;
 }
 
-// 内部子控件归属到宿主控件：下拉弹出项 -> QComboBox，滚动/列表视口 ->
-// 所属视图，数字框编辑行/箭头 -> QAbstractSpinBox，选项卡条 -> QTabWidget，
-// 表头 -> 所属视图，菜单 -> 触发它的父控件。
-QWidget *resolveControlOwner(QWidget *widget) {
-    if (!widget)
-        return nullptr;
-    // 下拉框的弹出列表视图本身（QComboBoxListView）也归属到所属 QComboBox。
-    if (auto *view = qobject_cast<QAbstractItemView *>(widget)) {
-        for (QObject *current = view; current; current = current->parent()) {
-            if (auto *combo = qobject_cast<QComboBox *>(current))
-                return combo;
-        }
-    }
-    if (auto *view = qobject_cast<QAbstractItemView *>(
-            widget->parentWidget())) {
-        if (widget == view->viewport()) {
-            if (QComboBox *combo = owningComboBox(view))
-                return combo;
-            return view;
-        }
-    }
-    if (auto *scroll = qobject_cast<QAbstractScrollArea *>(
-            widget->parentWidget())) {
-        if (widget == scroll->viewport())
-            return scroll;
-    }
-    if (auto *spin = qobject_cast<QAbstractSpinBox *>(
-            widget->parentWidget())) {
-        if (auto *lineEdit = qobject_cast<QLineEdit *>(widget)) {
-            if (lineEdit->objectName() ==
-                QStringLiteral("qt_spinbox_lineedit"))
-                return spin;
-        } else if (auto *button = qobject_cast<QToolButton *>(widget)) {
-            const QString name = button->objectName();
-            if (name == QStringLiteral("qt_spinbox_up") ||
-                name == QStringLiteral("qt_spinbox_down"))
-                return spin;
-        }
-    }
-    if (auto *tabBar = qobject_cast<QTabBar *>(widget)) {
-        if (auto *tabs =
-                qobject_cast<QTabWidget *>(tabBar->parentWidget()))
-            return tabs;
-    }
-    if (auto *header = qobject_cast<QHeaderView *>(widget)) {
-        if (auto *itemView =
-                qobject_cast<QAbstractItemView *>(header->parentWidget()))
-            return itemView;
-    }
-    if (auto *menu = qobject_cast<QMenu *>(widget)) {
-        if (menu->parentWidget())
-            return menu->parentWidget();
-    }
-    return widget;
-}
-
 QString controlUniqueId(QWidget *widget, const QString &sourceText) {
-    // 返回用于生成稳定 ID 的规范字符串：自身类名||自身 objectName||原英文，
-    // 哪一项没有就用 None 占位。内部子控件先归属到宿主控件，保证收起/展开
-    // 等不同点法识别到同一个 ID。
+    // 返回用于生成稳定 ID 的规范字符串：
+// 上级类名||自身类名||自身 objectName||原文，
+// 上级类名指被点击控件上级控件（parentWidget）的类名，
+    // 自身指被点击控件本身；哪一项没有就用 None 占位。
     if (!widget)
         return {};
 
-    QWidget *identity = resolveControlOwner(widget);
+    const QString parentClassName =
+        widget->parentWidget()
+            ? QString::fromLatin1(
+                  widget->parentWidget()->metaObject()->className())
+            : QString();
     const QString ownClassName =
-        QString::fromLatin1(identity->metaObject()->className());
-    const QString ownObjectName = identity->objectName();
+        QString::fromLatin1(widget->metaObject()->className());
+    const QString ownObjectName = widget->objectName();
     // 菜单/按钮文本可能带助记符 "&"，词库键统一用去掉助记符的原文。
     QString normalizedSource = sourceText;
     normalizedSource.remove(u'&');
@@ -1768,9 +1722,10 @@ QString controlUniqueId(QWidget *widget, const QString &sourceText) {
     auto orNone = [](const QString &value) {
         return value.isEmpty() ? QStringLiteral("None") : value;
     };
-    return orNone(ownClassName) + QStringLiteral("||")
-        + orNone(ownObjectName) + QStringLiteral("||")
-        + orNone(normalizedSource);
+return orNone(parentClassName) + QStringLiteral("||")
+    + orNone(ownClassName) + QStringLiteral("||")
+    + orNone(ownObjectName) + QStringLiteral("||")
+    + orNone(normalizedSource);
 }
 
 bool saveTranslation(const QString &source, const QString &target,
@@ -2009,6 +1964,34 @@ void showHostMessage(QWidget *parent, const QString &title,
     box.exec();
 }
 
+// 自定义 ID 的悬停注释：原生 ToolTip 会按宽度自动换行，这里用自绘
+// QLabel（默认不换行）保证注释始终显示在一行。
+class IdTipFilter final : public QObject {
+public:
+    explicit IdTipFilter(QObject *parent = nullptr) : QObject(parent) {}
+
+    QLabel *tip = nullptr;
+    QWidget *field = nullptr;
+
+    bool eventFilter(QObject *object, QEvent *event) override {
+        if (object != field)
+            return false;
+        if (event->type() == QEvent::Enter) {
+            if (tip) {
+                tip->adjustSize();
+                tip->move(field->mapToGlobal(
+                    QPoint(0, -tip->height() - 4)));
+                tip->show();
+                tip->raise();
+            }
+        } else if (event->type() == QEvent::Leave) {
+            if (tip)
+                tip->hide();
+        }
+        return false;
+    }
+};
+
 void editTranslation(const QString &source, const QString &uniqueId,
                      QWidget *parent) {
     if (source.isEmpty())
@@ -2054,8 +2037,23 @@ void editTranslation(const QString &source, const QString &uniqueId,
     currentEdit->setObjectName(QStringLiteral("sp_translation_current"));
     targetEdit->setObjectName(QStringLiteral("sp_translation_target"));
     uniqueIdEdit->setObjectName(QStringLiteral("sp_translation_unique_id"));
-    form->addRow(QStringLiteral("ID："), uniqueIdEdit);
-    form->addRow(QStringLiteral("原英文："), sourceEdit);
+    auto *idTip = new QLabel(
+        QStringLiteral(
+            "自定义 ID 格式：上级控件类名||自身控件类名||自身控件objectName||原文"),
+        &dialog);
+    idTip->setObjectName(QStringLiteral("sp_translation_id_tip"));
+    idTip->setWindowFlags(Qt::ToolTip);
+    idTip->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    idTip->setStyleSheet(QStringLiteral(
+        "QLabel { background: #2b2b2b; color: #ffffff;"
+        " padding: 4px 8px; border: 1px solid #555555; }"));
+    idTip->hide();
+    auto *idTipFilter = new IdTipFilter(idTip);
+    idTipFilter->tip = idTip;
+    idTipFilter->field = uniqueIdEdit;
+    uniqueIdEdit->installEventFilter(idTipFilter);
+    form->addRow(QStringLiteral("自定义ID："), uniqueIdEdit);
+    form->addRow(QStringLiteral("原文："), sourceEdit);
     form->addRow(QStringLiteral("当前翻译："), currentEdit);
     form->addRow(QStringLiteral("新翻译："), targetEdit);
     layout->addLayout(form);
@@ -2192,7 +2190,12 @@ protected:
         if (type == QEvent::ToolTip) {
             auto *widget = qobject_cast<QWidget *>(object);
             auto *help = static_cast<QHelpEvent *>(event);
-            if (shouldSuppressTooltip(widget)) {
+            // 插件自己的“更改翻译”弹窗放行原生 ToolTip（自定义 ID 的
+            // 悬停注释），其余控件按原有规则抑制。
+            const bool isPluginDialogWidget =
+                widget && widget->objectName().startsWith(
+                    QStringLiteral("sp_translation_"));
+            if (shouldSuppressTooltip(widget) && !isPluginDialogWidget) {
                 QToolTip::hideText();
                 if (g_originalTooltipOwner == widget)
                     g_originalTooltipOwner.clear();

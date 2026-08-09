@@ -44,6 +44,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListView>
+#include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
@@ -1699,6 +1700,47 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     return displayed;
 }
 
+// 控件所属面板（广义：QDockWidget 或 QDialog/顶层窗口）：
+// 同时返回 objectName 和窗口标题，缺省用 None 占位。
+QString controlPanelName(QWidget *widget) {
+    if (!widget)
+        return {};
+    QWidget *target = nullptr;
+    for (QWidget *current = widget; current;
+         current = current->parentWidget()) {
+        if (auto *dock = qobject_cast<QDockWidget *>(current)) {
+            target = dock;
+            break;
+        }
+        if (current->isWindow()) {
+            // 弹出菜单/下拉弹出层本身是无标题的临时窗口，
+            // 继续沿父级往上找真正的宿主窗口（QDialog/QMainWindow）。
+            const bool isPopup =
+                current->windowType() == Qt::Popup ||
+                current->windowType() == Qt::ToolTip;
+            const bool hasTitle =
+                !current->windowTitle().trimmed().isEmpty();
+            if (!isPopup &&
+                (hasTitle || qobject_cast<QDialog *>(current) ||
+                 qobject_cast<QMainWindow *>(current))) {
+                target = current;
+                break;
+            }
+            if (!current->parentWidget())
+                break;
+        }
+    }
+    if (!target)
+        target = widget->window();
+    if (!target)
+        return {};
+    const QString objectName = target->objectName();
+    const QString windowTitle = target->windowTitle().trimmed();
+    return QStringLiteral("objectName：%1，窗口标题：%2")
+        .arg(objectName.isEmpty() ? QStringLiteral("None") : objectName)
+        .arg(windowTitle.isEmpty() ? QStringLiteral("None") : windowTitle);
+}
+
 QString controlUniqueId(QWidget *widget, const QString &sourceText) {
     // 返回用于生成稳定 ID 的规范字符串：
 // 上级类名||自身类名||自身 objectName||原文，
@@ -1993,7 +2035,7 @@ public:
 };
 
 void editTranslation(const QString &source, const QString &uniqueId,
-                     QWidget *parent) {
+                     const QString &panelName, QWidget *parent) {
     if (source.isEmpty())
         return;
     QString scopedControlType;
@@ -2052,7 +2094,12 @@ void editTranslation(const QString &source, const QString &uniqueId,
     idTipFilter->tip = idTip;
     idTipFilter->field = uniqueIdEdit;
     uniqueIdEdit->installEventFilter(idTipFilter);
+    auto *panelEdit = new QLineEdit(
+        panelName.isEmpty() ? QStringLiteral("None") : panelName, &dialog);
+    panelEdit->setReadOnly(true);
+    panelEdit->setObjectName(QStringLiteral("sp_translation_panel_name"));
     form->addRow(QStringLiteral("自定义ID："), uniqueIdEdit);
+    form->addRow(QStringLiteral("所属面板："), panelEdit);
     form->addRow(QStringLiteral("原文："), sourceEdit);
     form->addRow(QStringLiteral("当前翻译："), currentEdit);
     form->addRow(QStringLiteral("新翻译："), targetEdit);
@@ -2151,14 +2198,15 @@ protected:
                 const QString source = contextSourceAt(menu, mousePos);
                 if (!source.isEmpty()) {
                     const QString uniqueId = controlUniqueId(menu, source);
+                    const QString panelName = controlPanelName(menu);
                     QPointer<QWidget> safeWindow(menu->window());
                     QTimer::singleShot(
                         0, qApp,
-                        [source, uniqueId, safeWindow]() {
+                        [source, uniqueId, panelName, safeWindow]() {
                         QWidget *parent = safeWindow.data();
                         if (!parent)
                             parent = QApplication::activeWindow();
-                        editTranslation(source, uniqueId, parent);
+                        editTranslation(source, uniqueId, panelName, parent);
                     });
                     event->accept();
                     return true;
@@ -2177,12 +2225,14 @@ protected:
             if (source.isEmpty())
                 return false;
             const QString uniqueId = controlUniqueId(widget, source);
+            const QString panelName = controlPanelName(widget);
             QPointer<QWidget> safeWidget(widget);
             QTimer::singleShot(
                 0, qApp,
-                [source, uniqueId, safeWidget]() {
+                [source, uniqueId, panelName, safeWidget]() {
                 if (safeWidget)
-                    editTranslation(source, uniqueId, safeWidget.data());
+                    editTranslation(source, uniqueId, panelName,
+                                    safeWidget.data());
             });
             event->accept();
             return true;

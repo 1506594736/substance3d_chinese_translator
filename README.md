@@ -26,8 +26,8 @@
 
 同一个发布包 `substance3d_chinese_translator.zip` 适用于两个软件，解压到各自的插件目录即可：
 
-- **Substance 3D Painter**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Painter\python\plugins`，此时应该有 `README.md` 在 `...\python\plugins\substance3d_chinese_translator\` 文件夹中，启动后打开菜单 `Python`，勾选"中文翻译补全插件"。
-- **Substance 3D Designer**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Designer\python\sduserplugins`，此时应该有 `README.md` 在 `...\python\sduserplugins\substance3d_chinese_translator` 文件夹，启动后插件自动加载，菜单栏出现"中文翻译工具"。
+- **Substance 3D Painter**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Painter\python\plugins`，此时应该有 `pluginInfo.json` 在 `...\python\plugins\substance3d_chinese_translator\` 文件夹中，启动后打开菜单 `Python`，勾选"中文翻译补全插件"。
+- **Substance 3D Designer**：解压到 `C:\Users\用户名\Documents\Adobe\Adobe Substance 3D Designer\python\sduserplugins`，此时应该有 `pluginInfo.json` 在 `...\python\sduserplugins\substance3d_chinese_translator` 文件夹，启动后插件自动加载，菜单栏出现"中文翻译工具"，没有就在工具，插件管理器里勾选。
 
 手动安装或替换插件目录前请先完全退出对应软件；插件自带的"检查插件更新"无需退出。
 

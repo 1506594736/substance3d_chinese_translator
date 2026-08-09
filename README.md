@@ -118,7 +118,7 @@
 ```
 
 专项词库（控件 ID 专属）与全局词库格式相同，放在 `control_ids_zh.json`，
-键为完整控件 ID（`自身类名 | 自身 objectName | 原英文`），
+键为完整控件 ID（`自身类名||自身 objectName||原英文`），
 用于让同一个原文在不同控件下显示不同的译文：
 
 ```json
@@ -127,8 +127,8 @@
   "id": "control-id-specific-translations",
   "language": "zh-CN",
   "translations": {
-    "QToolButton | blendingMode | Normal": "正常",
-    "QToolButton | blendingMode | Multiply": "正片叠底"
+    "QToolButton||blendingMode||Normal": "正常",
+    "QToolButton||blendingMode||Multiply": "正片叠底"
   }
 }
 ```

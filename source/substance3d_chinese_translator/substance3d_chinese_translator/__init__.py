@@ -76,7 +76,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "translator_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "1.2.0"
+PLUGIN_VERSION = "1.3.0"
 PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -177,7 +177,7 @@ def load_translation_packages():
             loaded = 0
             if name.lower() == "control_ids_zh.json":
                 # ID 专属词库：与全局词库同格式（根级 translations），
-                # 键为完整控件 ID（自身类名 | 自身 objectName | 原英文）。
+                # 键为完整控件 ID（自身类名||自身 objectName||原英文）。
                 for source, target in entries.items():
                     if (isinstance(source, str) and isinstance(target, str)
                             and source and target):

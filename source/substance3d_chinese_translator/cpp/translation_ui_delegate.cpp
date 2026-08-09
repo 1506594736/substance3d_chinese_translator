@@ -45,6 +45,7 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListView>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStyledItemDelegate>
@@ -281,7 +282,7 @@ QComboBox *owningComboBoxFast(QAbstractItemView *view) {
 QString translated(const QString &text, bool removeMnemonic = false,
                    const QString &controlId = QString()) {
     // translated() 查找顺序：
-    //   1. 先识别控件 ID（自身类名 | 自身 objectName | 原英文），在
+    //   1. 先识别控件 ID（自身类名||自身 objectName||原英文），在
     //      id_types_zh.json 中按完整 ID 键精确查找，命中即返回；
     //   2. 全局词库（official/my_assets_zh.json）命中即返回；
     //   3. 全局仍未命中，直接走模糊匹配兜底。
@@ -295,6 +296,24 @@ QString translated(const QString &text, bool removeMnemonic = false,
         const auto idHit = g_idTranslations.constFind(controlId);
         if (idHit != g_idTranslations.cend())
             return idHit.value();
+        // 跳过翻译标记：键为“类名||objectName||*”（* 表示任意原文）、
+        // 值为 "_skip_"，
+        // 表示该控件下任何原文都不翻译（例如导入对话框的
+        // QListWidget||files，避免把 texture 改成纹理破坏导入类型键）。
+        const int lastSeparator =
+            controlId.lastIndexOf(QStringLiteral("||"));
+        if (lastSeparator > 0) {
+            const QString wildcard =
+                controlId.left(lastSeparator) + QStringLiteral("||*");
+            const auto globalWildcard = g_translations.constFind(wildcard);
+            if (globalWildcard != g_translations.cend() &&
+                globalWildcard.value() == QStringLiteral("_skip_"))
+                return {};
+            const auto idWildcard = g_idTranslations.constFind(wildcard);
+            if (idWildcard != g_idTranslations.cend() &&
+                idWildcard.value() == QStringLiteral("_skip_"))
+                return {};
+        }
     }
     // 全局词库：允许用户映射覆盖官方中文。
     const auto exact = g_translations.constFind(key);
@@ -1179,6 +1198,20 @@ void translateMenu(QMenu *menu) {
     }
 }
 
+void translateMenuBar(QMenuBar *menuBar) {
+    if (!menuBar || !g_enabled)
+        return;
+    for (QAction *action : menuBar->actions()) {
+        const QString source = actionSource(action);
+        const QString result = translated(source, true,
+                                          translationControlId(menuBar, source));
+        if (!result.isNull() && action->text() != result) {
+            action->setProperty(kSourceProperty, source);
+            action->setText(result);
+        }
+    }
+}
+
 void translateWidget(QWidget *widget) {
     if (!widget || !g_enabled)
         return;
@@ -1197,6 +1230,7 @@ void translateWidget(QWidget *widget) {
     const bool supportedType =
         qobject_cast<QAbstractItemView *>(widget) ||
         qobject_cast<QMenu *>(widget) ||
+        qobject_cast<QMenuBar *>(widget) ||
         qobject_cast<QAbstractButton *>(widget) ||
         qobject_cast<QLabel *>(widget) ||
         qobject_cast<QGroupBox *>(widget) ||
@@ -1236,6 +1270,10 @@ void translateWidget(QWidget *widget) {
 
     if (auto *menu = qobject_cast<QMenu *>(widget)) {
         translateMenu(menu);
+        return;
+    }
+    if (auto *menuBar = qobject_cast<QMenuBar *>(widget)) {
+        translateMenuBar(menuBar);
         return;
     }
     if (auto *button = qobject_cast<QAbstractButton *>(widget)) {
@@ -1479,6 +1517,12 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
         displayed = label->text();
     else if (auto *group = qobject_cast<QGroupBox *>(widget))
         displayed = group->title();
+    else if (auto *menuBar = qobject_cast<QMenuBar *>(widget)) {
+        QAction *action = menuBar->actionAt(position);
+        if (!action)
+            return {};
+        displayed = action->text();
+    }
     else if (auto *combo = qobject_cast<QComboBox *>(widget)) {
         displayed = combo->currentText();
         const QStringList sources =
@@ -1707,7 +1751,7 @@ QWidget *resolveControlOwner(QWidget *widget) {
 }
 
 QString controlUniqueId(QWidget *widget, const QString &sourceText) {
-    // 返回用于生成稳定 ID 的规范字符串：自身类名 | 自身 objectName | 原英文，
+    // 返回用于生成稳定 ID 的规范字符串：自身类名||自身 objectName||原英文，
     // 哪一项没有就用 None 占位。内部子控件先归属到宿主控件，保证收起/展开
     // 等不同点法识别到同一个 ID。
     if (!widget)
@@ -1724,8 +1768,8 @@ QString controlUniqueId(QWidget *widget, const QString &sourceText) {
     auto orNone = [](const QString &value) {
         return value.isEmpty() ? QStringLiteral("None") : value;
     };
-    return orNone(ownClassName) + QStringLiteral(" | ")
-        + orNone(ownObjectName) + QStringLiteral(" | ")
+    return orNone(ownClassName) + QStringLiteral("||")
+        + orNone(ownObjectName) + QStringLiteral("||")
         + orNone(normalizedSource);
 }
 
@@ -1834,6 +1878,16 @@ void restoreTranslatedWidget(QWidget *widget) {
     }
     if (auto *menu = qobject_cast<QMenu *>(widget)) {
         for (QAction *action : menu->actions()) {
+            const QString source = action->property(kSourceProperty).toString();
+            if (!source.isEmpty()) {
+                action->setText(source);
+                action->setProperty(kSourceProperty, QVariant());
+            }
+        }
+        return;
+    }
+    if (auto *menuBar = qobject_cast<QMenuBar *>(widget)) {
+        for (QAction *action : menuBar->actions()) {
             const QString source = action->property(kSourceProperty).toString();
             if (!source.isEmpty()) {
                 action->setText(source);

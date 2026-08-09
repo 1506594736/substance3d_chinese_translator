@@ -2288,6 +2288,7 @@ protected:
 
 TranslationUiFilter *g_filter = nullptr;
 QTimer *g_fallbackTimer = nullptr;
+bool g_fallbackScanEnabled = false;
 
 void scanVisibleWidgets() {
     if (!g_enabled)
@@ -2345,6 +2346,17 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fuzzy_match(
     int enabled) {
     g_fuzzyMatchEnabled = enabled != 0;
     g_fuzzyResolved.clear();
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_scan(
+    int enabled) {
+    g_fallbackScanEnabled = enabled != 0;
+    if (!g_fallbackTimer)
+        return;
+    if (g_fallbackScanEnabled && !g_fallbackTimer->isActive())
+        g_fallbackTimer->start();
+    else if (!g_fallbackScanEnabled && g_fallbackTimer->isActive())
+        g_fallbackTimer->stop();
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_reserve_translations(
@@ -2442,7 +2454,9 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
         g_fallbackTimer = new QTimer(application);
         g_fallbackTimer->setInterval(10000);
         QObject::connect(g_fallbackTimer, &QTimer::timeout, application, [] { scanVisibleWidgets(); });
-        g_fallbackTimer->start();
+        // 全量扫描兜底默认关闭，由 Python 侧开关控制（sp_delegate_set_fallback_scan）。
+        if (g_fallbackScanEnabled)
+            g_fallbackTimer->start();
     }
     scanVisibleWidgets();
     return 1;

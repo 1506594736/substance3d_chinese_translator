@@ -61,6 +61,7 @@ IS_CLEANING = False
 IS_TRANSLATION_ENABLED = True
 TRANSLATE_LAYERS_PANEL = True
 FUZZY_MATCH_ENABLED = True
+FALLBACK_SCAN_ENABLED = False
 # 统一插件包中本模块位于 <包>/substance3d_chinese_translator/，包根目录是上一层。
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.dirname(MODULE_DIR)
@@ -254,6 +255,8 @@ def _load_native_delegate():
         dll.sp_delegate_set_enabled.restype = None
         dll.sp_delegate_set_fuzzy_match.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_fuzzy_match.restype = None
+        dll.sp_delegate_set_fallback_scan.argtypes = [ctypes.c_int]
+        dll.sp_delegate_set_fallback_scan.restype = None
         dll.sp_delegate_set_translate_layers.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_translate_layers.restype = None
         dll.sp_delegate_install.argtypes = [ctypes.c_void_p]
@@ -285,6 +288,7 @@ def _sync_native_dictionary():
         )
         dll.sp_delegate_set_translate_layers(int(TRANSLATE_LAYERS_PANEL))
         dll.sp_delegate_set_fuzzy_match(int(FUZZY_MATCH_ENABLED))
+        dll.sp_delegate_set_fallback_scan(int(FALLBACK_SCAN_ENABLED))
         dll.sp_delegate_reserve_translations(len(TRANSLATE_DICT))
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
@@ -526,6 +530,17 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         )
         self.fuzzy_match_check.toggled.connect(_set_fuzzy_match)
         translation_layout.addWidget(self.fuzzy_match_check)
+        self.fallback_scan_check = QtWidgets.QCheckBox(
+            "启用全量扫描兜底（每 10 秒一次，翻译有漏网时启用）",
+            translation_group,
+        )
+        self.fallback_scan_check.setChecked(FALLBACK_SCAN_ENABLED)
+        self.fallback_scan_check.setToolTip(
+            "勾选后插件每 10 秒扫描一次全部可见控件补翻译。"
+            "正常情况下界面事件已能覆盖所有翻译，一般无需开启。"
+        )
+        self.fallback_scan_check.toggled.connect(_set_fallback_scan)
+        translation_layout.addWidget(self.fallback_scan_check)
         hint_text = (
             "提示：取消勾选“启用插件翻译”后，整个界面立即恢复英文原文。"
             "仅关闭“翻译图层面板”则只恢复图层面板中的原文。"
@@ -1307,6 +1322,22 @@ def _set_fuzzy_match(enabled):
             print(">>> 切换模糊匹配失败:", exc)
 
 
+def _set_fallback_scan(enabled):
+    """切换 C++ 的每 10 秒全量扫描兜底（默认关闭）。"""
+    global FALLBACK_SCAN_ENABLED
+    FALLBACK_SCAN_ENABLED = bool(enabled)
+    QtCore.QSettings().setValue(
+        "substance3d_chinese_translator/fallback_scan",
+        FALLBACK_SCAN_ENABLED,
+    )
+    dll = _load_native_delegate()
+    if dll is not None:
+        try:
+            dll.sp_delegate_set_fallback_scan(int(FALLBACK_SCAN_ENABLED))
+        except Exception as exc:
+            print(">>> 切换全量扫描兜底失败:", exc)
+
+
 def _set_translation_enabled(enabled):
     """Toggle the whole translation engine on/off.
 
@@ -2018,6 +2049,9 @@ def show_translation_tool():
             parent = sp.ui.get_main_window()
         _label_extractor_dialog = ChineseTranslationToolDialog(parent)
     _label_extractor_dialog.fuzzy_match_check.setChecked(FUZZY_MATCH_ENABLED)
+    _label_extractor_dialog.fallback_scan_check.setChecked(
+        FALLBACK_SCAN_ENABLED
+    )
     _label_extractor_dialog.translation_enabled_check.setChecked(
         IS_TRANSLATION_ENABLED
     )
@@ -2174,7 +2208,7 @@ def _set_registered_plugin_display_name(main_window):
 
 def start_plugin():
     global IS_APP_QUITTING, IS_CLEANING, IS_TRANSLATION_ENABLED
-    global TRANSLATE_LAYERS_PANEL, FUZZY_MATCH_ENABLED
+    global TRANSLATE_LAYERS_PANEL, FUZZY_MATCH_ENABLED, FALLBACK_SCAN_ENABLED
     global _label_extractor_action, _label_extractor_menu_bar
 
     app = QtWidgets.QApplication.instance()
@@ -2194,6 +2228,9 @@ def start_plugin():
     )
     FUZZY_MATCH_ENABLED = _read_bool_setting(
         "substance3d_chinese_translator/fuzzy_match", True
+    )
+    FALLBACK_SCAN_ENABLED = _read_bool_setting(
+        "substance3d_chinese_translator/fallback_scan", False
     )
 
     # Remove native DLLs/EXEs renamed aside by a previous in-place update.

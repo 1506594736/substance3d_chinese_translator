@@ -45,11 +45,389 @@ WA_DELETE_ON_CLOSE = (QtCore.Qt.WA_DeleteOnClose if QT_MAJOR == 5
                       else QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 WAIT_CURSOR = (QtCore.Qt.WaitCursor if QT_MAJOR == 5
                else QtCore.Qt.CursorShape.WaitCursor)
-FRAME_STYLED_PANEL = (QtWidgets.QFrame.Shape.StyledPanel if QT_MAJOR >= 6
-                      else QtWidgets.QFrame.StyledPanel)
 WINDOW_MODAL = (QtCore.Qt.WindowModal if QT_MAJOR == 5
                 else QtCore.Qt.WindowModality.WindowModal)
 QAction = QtWidgets.QAction if QT_MAJOR == 5 else QtGui.QAction
+KeyboardModifier = (
+    QtCore.Qt.KeyboardModifier if QT_MAJOR >= 6 else QtCore.Qt
+)
+Key = QtCore.Qt.Key if QT_MAJOR >= 6 else QtCore.Qt
+KEY_ESCAPE = Key.Key_Escape
+KEY_BACKSPACE = Key.Key_Backspace
+KEY_CONTROL = Key.Key_Control
+KEY_SHIFT = Key.Key_Shift
+KEY_ALT = Key.Key_Alt
+KEY_META = Key.Key_Meta
+ITEM_DATA_ROLE_DISPLAY = (
+    QtCore.Qt.ItemDataRole.DisplayRole if QT_MAJOR >= 6
+    else QtCore.Qt.DisplayRole
+)
+
+
+def _enum_int(value):
+    """兼容 PySide2/PySide6 的枚举取整。"""
+    try:
+        return int(value)
+    except TypeError:
+        return int(value.value)
+
+
+STRONG_FOCUS = (
+    QtCore.Qt.FocusPolicy.StrongFocus if QT_MAJOR >= 6
+    else QtCore.Qt.StrongFocus
+)
+POINTING_HAND = (
+    QtCore.Qt.CursorShape.PointingHandCursor if QT_MAJOR >= 6
+    else QtCore.Qt.PointingHandCursor
+)
+EVENT_SHORTCUT_OVERRIDE = (
+    QtCore.QEvent.Type.ShortcutOverride if QT_MAJOR >= 6
+    else QtCore.QEvent.ShortcutOverride
+)
+EVENT_KEY_PRESS = (
+    QtCore.QEvent.Type.KeyPress if QT_MAJOR >= 6
+    else QtCore.QEvent.KeyPress
+)
+EVENT_KEY_RELEASE = (
+    QtCore.QEvent.Type.KeyRelease if QT_MAJOR >= 6
+    else QtCore.QEvent.KeyRelease
+)
+EVENT_MOUSE_BUTTON_PRESS = (
+    QtCore.QEvent.Type.MouseButtonPress if QT_MAJOR >= 6
+    else QtCore.QEvent.MouseButtonPress
+)
+EVENT_MOUSE_BUTTON_RELEASE = (
+    QtCore.QEvent.Type.MouseButtonRelease if QT_MAJOR >= 6
+    else QtCore.QEvent.MouseButtonRelease
+)
+
+
+def _key_sequence_string(key_code, modifiers):
+    """把按键码与修饰键组合成 QKeySequence 的可读字符串。"""
+    key_int = _enum_int(key_code)
+    mod_int = _enum_int(modifiers)
+    try:
+        return QtGui.QKeySequence(key_int | mod_int).toString()
+    except Exception:
+        return QtGui.QKeySequence(key_int).toString()
+
+
+def _modifier_label(modifier):
+    """把修饰键整数转成可读文本，如 Ctrl+Alt+Shift。"""
+    parts = []
+    modifier = int(modifier)
+    if modifier & _enum_int(KeyboardModifier.ControlModifier):
+        parts.append("Ctrl")
+    if modifier & _enum_int(KeyboardModifier.AltModifier):
+        parts.append("Alt")
+    if modifier & _enum_int(KeyboardModifier.ShiftModifier):
+        parts.append("Shift")
+    return "+".join(parts)
+
+
+MouseButton = QtCore.Qt.MouseButton if QT_MAJOR >= 6 else QtCore.Qt
+MOUSE_LEFT = _enum_int(MouseButton.LeftButton)
+MOUSE_RIGHT = _enum_int(MouseButton.RightButton)
+MOUSE_MIDDLE = _enum_int(MouseButton.MiddleButton)
+MODIFIER_MASK = (
+    _enum_int(KeyboardModifier.ControlModifier)
+    | _enum_int(KeyboardModifier.AltModifier)
+    | _enum_int(KeyboardModifier.ShiftModifier)
+)
+EXPANDING_POLICY = (
+    QtWidgets.QSizePolicy.Policy.Expanding if QT_MAJOR >= 6
+    else QtWidgets.QSizePolicy.Expanding
+)
+
+
+def _modifier_only_sequence(modifiers):
+    """把只有修饰键（无主键）的组合转成可读序列，如 Ctrl、Ctrl+Alt。"""
+    return _modifier_label(int(modifiers) & MODIFIER_MASK)
+
+
+def _button_name(button):
+    """把鼠标按键整数转成可读文本。"""
+    if button == MOUSE_LEFT:
+        return "左键"
+    if button == MOUSE_RIGHT:
+        return "右键"
+    if button == MOUSE_MIDDLE:
+        return "中键"
+    return "按键"
+
+
+class EditTrigger:
+    """“更改翻译弹窗”的触发配置：键盘序列 + 鼠标按键。"""
+
+    SETTINGS_PREFIX = "substance3d_chinese_translator"
+
+    def __init__(self, key=None, button=None):
+        self.key = key if key is not None else "Ctrl"
+        self.button = (
+            int(button) if button is not None else MOUSE_RIGHT
+        )
+
+    def display_text(self):
+        if self.key and self.button:
+            return self.key + "+" + _button_name(self.button)
+        return "无"
+
+    def set_trigger(self, key, button):
+        self.key = key or ""
+        # 0 表示“不绑定鼠标按键”，即禁用该触发方式，不再强制回退为右键。
+        self.button = int(button)
+
+    @staticmethod
+    def _has_modifier(key):
+        """快捷键序列是否包含 Ctrl/Alt/Shift 修饰键。"""
+        return any(name in key for name in ("Ctrl", "Alt", "Shift"))
+
+    def restore_default(self):
+        self.set_trigger("Ctrl", MOUSE_RIGHT)
+
+    def load(self):
+        """从 QSettings 读取；读取失败时保持当前值。"""
+        settings = QtCore.QSettings()
+        try:
+            stored = settings.value(
+                self.SETTINGS_PREFIX + "/edit_key", None)
+            if stored is None:
+                # 旧版兼容：从 edit_modifier 迁移为键盘序列。
+                modifier = int(
+                    settings.value(
+                        self.SETTINGS_PREFIX + "/edit_modifier",
+                        _enum_int(KeyboardModifier.ControlModifier),
+                    )
+                )
+                self.key = _modifier_label(modifier)
+            else:
+                self.key = str(stored)
+                # 旧版可能保存过不带修饰键的组合（如 Z+左键），已不再接受，
+                # 读取时回退到默认 Ctrl。
+                if self.key and not self._has_modifier():
+                    self.key = "Ctrl"
+        except (TypeError, ValueError):
+            pass
+        try:
+            button = int(
+                settings.value(
+                    self.SETTINGS_PREFIX + "/edit_button",
+                    self.button,
+                )
+            )
+            self.button = button
+        except (TypeError, ValueError):
+            pass
+        # 旧版“独立键盘快捷键”不再接受，读取时忽略。
+
+    def save(self):
+        settings = QtCore.QSettings()
+        settings.setValue(
+            self.SETTINGS_PREFIX + "/edit_key", self.key
+        )
+        settings.setValue(
+            self.SETTINGS_PREFIX + "/edit_button", self.button
+        )
+
+    def apply_to_native(self):
+        """把当前配置推送到原生引擎。"""
+        return (
+            _call_native(
+                "sp_delegate_set_edit_key", self.key,
+                label="切换更改翻译弹窗触发方式",
+            )
+            and _call_native(
+                "sp_delegate_set_edit_button", self.button,
+                label="切换更改翻译弹窗触发方式",
+            )
+        )
+
+
+class CaptureButton(QtWidgets.QPushButton):
+    """通用快捷键监听按钮：点击进入监听，Esc 取消，Backspace 交给外部恢复默认。
+
+    ``capture_mouse=True`` 时监听“键盘序列+鼠标按键”组合，
+    以 (键盘序列, 鼠标按键) 形式通过 ``mouse_captured`` 发出。
+    """
+
+    key_captured = QtCore.Signal(str)
+    mouse_captured = QtCore.Signal(str, int)
+    restore_default = QtCore.Signal()
+    cancelled = QtCore.Signal()
+    invalid_combination = QtCore.Signal(str)
+
+    def __init__(self, capture_mouse=False, parent=None):
+        super().__init__(parent)
+        self._capture_mouse = bool(capture_mouse)
+        self._normal_text = ""
+        self._capturing = False
+        self._app = None
+        self._pending_key_code = None
+        self._pending_seq = None
+        self._pending_button = None
+        self._pending_text = None
+        self.setFocusPolicy(STRONG_FOCUS)
+        self.setCursor(POINTING_HAND)
+        self.clicked.connect(self._toggle_capture)
+        self._refresh_text()
+
+    def set_value(self, text):
+        """外部同步当前值文本，不触发保存。"""
+        self._normal_text = text if text is not None else ""
+        self._refresh_text()
+
+    def _display_text(self):
+        if self._capturing:
+            if self._pending_text:
+                return self._pending_text
+            if self._capture_mouse:
+                return "请按下快捷键和鼠标组合"
+            return "请按下快捷键"
+        return self._normal_text or "无"
+
+    def _refresh_text(self):
+        self.setText(self._display_text())
+
+    def _toggle_capture(self):
+        if self._capturing:
+            self._end_capture()
+        else:
+            self._start_capture()
+
+    def _start_capture(self):
+        self._capturing = True
+        self._pending_key_code = None
+        self._pending_seq = None
+        self._pending_button = None
+        self._pending_text = None
+        self._refresh_text()
+        self.setFocus()
+        self._app = QtWidgets.QApplication.instance()
+        if is_safe(self._app):
+            self._app.installEventFilter(self)
+
+    def _end_capture(self):
+        if self._capturing and is_safe(self._app):
+            self._app.removeEventFilter(self)
+        self._capturing = False
+        self._pending_key_code = None
+        self._pending_seq = None
+        self._pending_button = None
+        self._pending_text = None
+        self._refresh_text()
+
+    def _handle_key(self, event):
+        """处理捕获到的按键；返回 True 表示已消费。"""
+        key = event.key()
+        if key == KEY_ESCAPE:
+            self._end_capture()
+            self.cancelled.emit()
+            return True
+        if key == KEY_BACKSPACE:
+            self._end_capture()
+            self.restore_default.emit()
+            return True
+        if key in (KEY_CONTROL, KEY_SHIFT, KEY_ALT, KEY_META):
+            return True
+        if self._capture_mouse:
+            # 鼠标监听模式：记录当前按住的按键，等待与鼠标按键组合。
+            self._pending_key_code = _enum_int(key)
+            return True
+        seq = _key_sequence_string(key, event.modifiers())
+        self._end_capture()
+        if seq:
+            self.key_captured.emit(seq)
+        else:
+            self.cancelled.emit()
+        return True
+
+    def _handle_key_release(self, event):
+        """释放按键时清除记录的键盘序列，避免未按住的键被误组合。"""
+        if not self._capturing or not self._capture_mouse:
+            return False
+        if (self._pending_key_code is not None
+                and _enum_int(event.key()) == self._pending_key_code):
+            self._pending_key_code = None
+        return True
+
+    def _handle_mouse_press(self, event):
+        """键盘序列+鼠标按键组合：记录并在释放时生效，避免原生弹窗同时弹出。"""
+        if not self._capture_mouse:
+            return False
+        button = _enum_int(event.button())
+        if button not in (MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE):
+            return False
+        modifiers = _enum_int(event.modifiers())
+        if self._pending_key_code is not None:
+            seq = _key_sequence_string(self._pending_key_code, modifiers)
+        elif modifiers & MODIFIER_MASK:
+            seq = _modifier_only_sequence(modifiers)
+        else:
+            # 只按了鼠标按键（无键盘序列）：不修改当前快捷键。
+            return False
+        if not seq:
+            return False
+        if not (modifiers & MODIFIER_MASK):
+            # 只接受带 Ctrl/Alt/Shift 修饰键的组合（例如 Ctrl+X+左键）。
+            # 无修饰键的字母键（如 Z+左键）会在弹窗打开时把字符灌进输入框，
+            # 因此不再允许设置；结束监听、恢复按钮显示当前快捷键，并弹框说明。
+            self._end_capture()
+            self.invalid_combination.emit(
+                "快捷键必须包含 Ctrl/Alt/Shift 修饰键。\n"
+                "例如：Ctrl+右键、Ctrl+X+左键、Alt+右键。\n"
+                "单独的字母键+鼠标（如 Z+左键）不再支持。"
+            )
+            return True
+        self._pending_seq = seq
+        self._pending_button = button
+        self._pending_text = seq + "+" + _button_name(button)
+        self._refresh_text()
+        return True
+
+    def _handle_mouse_release(self, event):
+        if not self._capture_mouse:
+            return False
+        button = _enum_int(event.button())
+        if button not in (MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE):
+            return False
+        pending_seq = self._pending_seq
+        pending_btn = self._pending_button
+        if pending_btn is not None and pending_btn == button:
+            self._end_capture()
+            self.mouse_captured.emit(pending_seq, pending_btn)
+            return True
+        return False
+
+    def eventFilter(self, obj, event):
+        """监听期间在应用层接管按键，与焦点和宿主快捷键抢占无关。"""
+        if not self._capturing:
+            return False
+        etype = event.type()
+        if etype == EVENT_SHORTCUT_OVERRIDE:
+            event.accept()
+            return True
+        if etype == EVENT_KEY_PRESS:
+            return self._handle_key(event)
+        if etype == EVENT_KEY_RELEASE:
+            return self._handle_key_release(event)
+        if etype == EVENT_MOUSE_BUTTON_PRESS:
+            return self._handle_mouse_press(event)
+        if etype == EVENT_MOUSE_BUTTON_RELEASE:
+            return self._handle_mouse_release(event)
+        return False
+
+    def keyPressEvent(self, event):
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+        self._handle_key(event)
+        event.accept()
+
+    def focusOutEvent(self, event):
+        if self._capturing:
+            self._end_capture()
+        super().focusOutEvent(event)
+
 
 HOST_DISPLAY_NAME = (
     "Substance 3D Designer" if HOST == "designer"
@@ -62,6 +440,9 @@ IS_TRANSLATION_ENABLED = True
 TRANSLATE_LAYERS_PANEL = True
 FUZZY_MATCH_ENABLED = True
 FALLBACK_SCAN_ENABLED = False
+ENABLE_SHORTCUT_DEFAULT = "F10"
+ENABLE_SHORTCUT = ENABLE_SHORTCUT_DEFAULT
+EDIT_TRIGGER = EditTrigger()
 # 统一插件包中本模块位于 <包>/substance3d_chinese_translator/，包根目录是上一层。
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.dirname(MODULE_DIR)
@@ -77,7 +458,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "translator_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "1.3.1"
+PLUGIN_VERSION = "1.3.2"
 PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -110,6 +491,48 @@ def _read_bool_setting(key, default):
         if normalized in {"0", "false", "no", "off", "disabled", ""}:
             return False
     return bool(default)
+
+
+def _load_saved_settings():
+    """从 QSettings 恢复全部用户设置，Painter 与 Designer 共用同一份代码。"""
+    global IS_TRANSLATION_ENABLED, TRANSLATE_LAYERS_PANEL
+    global FUZZY_MATCH_ENABLED, FALLBACK_SCAN_ENABLED
+    global ENABLE_SHORTCUT
+    IS_TRANSLATION_ENABLED = _read_bool_setting(
+        "substance3d_chinese_translator/enabled", True
+    )
+    if HOST == "painter":
+        TRANSLATE_LAYERS_PANEL = _read_bool_setting(
+            "substance3d_chinese_translator/translate_layers_panel", True
+        )
+    FUZZY_MATCH_ENABLED = _read_bool_setting(
+        "substance3d_chinese_translator/fuzzy_match", True
+    )
+    FALLBACK_SCAN_ENABLED = _read_bool_setting(
+        "substance3d_chinese_translator/fallback_scan", False
+    )
+    ENABLE_SHORTCUT = str(
+        QtCore.QSettings().value(
+            "substance3d_chinese_translator/enable_shortcut",
+            ENABLE_SHORTCUT,
+        )
+    )
+    EDIT_TRIGGER.load()
+
+
+def _get_main_window():
+    """获取宿主主窗口（Painter / Designer 共用同一份实现）。"""
+    try:
+        if HOST == "painter":
+            return sp.ui.get_main_window()
+        ui_manager = (
+            sd.getContext().getSDApplication().getQtForPythonUIMgr()
+        )
+        if ui_manager is None:
+            return None
+        return ui_manager.getMainWindow()
+    except Exception:
+        return None
 
 
 # ==========================================
@@ -257,6 +680,18 @@ def _load_native_delegate():
         dll.sp_delegate_set_fuzzy_match.restype = None
         dll.sp_delegate_set_fallback_scan.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_fallback_scan.restype = None
+        dll.sp_delegate_set_edit_key.argtypes = [ctypes.c_wchar_p]
+        dll.sp_delegate_set_edit_key.restype = None
+        dll.sp_delegate_is_extractable.argtypes = [ctypes.c_wchar_p]
+        dll.sp_delegate_is_extractable.restype = ctypes.c_int
+        dll.sp_delegate_set_edit_button.argtypes = [ctypes.c_int]
+        dll.sp_delegate_set_edit_button.restype = None
+        dll.sp_delegate_set_shortcut_callback.argtypes = [ctypes.c_void_p]
+        dll.sp_delegate_set_shortcut_callback.restype = None
+        dll.sp_delegate_set_enable_shortcut.argtypes = [ctypes.c_wchar_p]
+        dll.sp_delegate_set_enable_shortcut.restype = None
+        dll.sp_delegate_show_edit_at_cursor.argtypes = []
+        dll.sp_delegate_show_edit_at_cursor.restype = None
         dll.sp_delegate_set_translate_layers.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_translate_layers.restype = None
         dll.sp_delegate_install.argtypes = [ctypes.c_void_p]
@@ -267,11 +702,27 @@ def _load_native_delegate():
         if api_version != 10:
             print(f">>> 原生翻译模块 API 不兼容: 需要 10，实际 {api_version}")
             return None
+        dll.sp_delegate_build_id.restype = ctypes.c_wchar_p
+        dll.sp_delegate_build_id.argtypes = []
+        print(f">>> 原生翻译引擎构建标识: {dll.sp_delegate_build_id()}")
         _native_delegate = dll
     except Exception as exc:
         print(">>> 原生资源翻译 delegate 加载失败:", exc)
         _native_delegate = None
     return _native_delegate
+
+
+def _call_native(func_name, *args, label="原生调用"):
+    """调用原生 DLL 函数，统一处理失败日志。"""
+    dll = _load_native_delegate()
+    if dll is None:
+        return False
+    try:
+        getattr(dll, func_name)(*args)
+        return True
+    except Exception as exc:
+        print(f">>> {label}失败:", exc)
+        return False
 
 
 def _sync_native_dictionary():
@@ -289,6 +740,7 @@ def _sync_native_dictionary():
         dll.sp_delegate_set_translate_layers(int(TRANSLATE_LAYERS_PANEL))
         dll.sp_delegate_set_fuzzy_match(int(FUZZY_MATCH_ENABLED))
         dll.sp_delegate_set_fallback_scan(int(FALLBACK_SCAN_ENABLED))
+        EDIT_TRIGGER.apply_to_native()
         dll.sp_delegate_reserve_translations(len(TRANSLATE_DICT))
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
@@ -354,36 +806,37 @@ def _write_json_atomic(path, payload):
         raise
 
 
-def _contains_han(text):
-    return any("\u3400" <= char <= "\u9fff" for char in str(text))
+def _ensure_zh_json_suffix(path):
+    """确保输出文件以 _zh.json 结尾，避免写出无法被加载的词典文件。"""
+    if not str(path).lower().endswith("_zh.json"):
+        return os.path.splitext(path)[0] + "_zh.json"
+    return path
 
 
-def _is_valid_translation_source(text):
-    """Return whether text can be retained as a translation source."""
-    value = str(text).strip()
-    if not value or _contains_han(value):
-        return False
-    if re.fullmatch(
-        r"[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)(?:[eE][+-]?\d+)?%?",
-        value,
-    ) is not None:
-        return False
-    return True
+def _load_existing_translations(path):
+    """读取已有翻译包中的 translations 对象；文件无效或不存在时返回空字典。"""
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as stream:
+            payload = json.load(stream)
+        if payload.get("$schema") == "sp-translation-v1":
+            entries = payload.get("translations", {})
+            return entries if isinstance(entries, dict) else {}
+    except Exception:
+        pass
+    return {}
 
 
-def _is_extractable_source(text):
-    """Return whether text is a new source worth adding to an extraction."""
-    value = str(text).strip()
-    if not _is_valid_translation_source(value):
+def _is_extractable(name):
+    """是否值得导出/提取：判定规则统一在 C++，Python 只转发。"""
+    dll = _load_native_delegate()
+    if dll is None:
         return False
-    if value in TRANSLATE_DICT:
+    try:
+        return bool(dll.sp_delegate_is_extractable(str(name)))
+    except Exception:
         return False
-    if value in ID_TRANSLATE_DICTS:
-        return False
-    return not any(
-        value in translations
-        for translations in CONTROL_TRANSLATE_DICTS.values()
-    )
 
 
 # ---------------------------------------------------------------
@@ -437,7 +890,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"中文翻译工具 v{PLUGIN_VERSION}")
         self.setObjectName("substance3d_chinese_translator_tool")
-        self.setMinimumSize(780, 640)
+        self.setMinimumSize(680, 500)
         self.setSizeGripEnabled(True)
         self.setAttribute(WA_DELETE_ON_CLOSE, False)
         self._cancelled = False
@@ -465,31 +918,25 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         credit.setToolTip(
             "打开 bilibili 作者主页 / GitHub 仓库"
         )
-        layout.addWidget(credit)
-
-        translation_group = QtWidgets.QFrame(self)
-        translation_group.setFrameShape(FRAME_STYLED_PANEL)
-        translation_layout = QtWidgets.QVBoxLayout(translation_group)
-        translation_header = QtWidgets.QHBoxLayout()
-        translation_title = QtWidgets.QLabel(
-            "界面翻译（即时生效）", translation_group
-        )
-        title_font = translation_title.font()
-        title_font.setBold(True)
-        translation_title.setFont(title_font)
-        translation_header.addWidget(translation_title)
-        translation_header.addStretch(1)
-        self.update_button = QtWidgets.QPushButton(
-            "检查插件更新", translation_group
-        )
+        # 作者署名链接与“检查插件更新”按钮同一行，按钮右对齐。
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.addWidget(credit, 1)
+        self.update_button = QtWidgets.QPushButton("检查插件更新", self)
         self.update_button.setToolTip(
             "从 GitHub 检查最新版本。发现新版本时可下载安装包。"
         )
         self.update_button.clicked.connect(
             lambda: _check_updates(self)
         )
-        translation_header.addWidget(self.update_button)
-        translation_layout.addLayout(translation_header)
+        top_row.addWidget(self.update_button)
+        layout.addLayout(top_row)
+
+        # 与“快捷键/提取设置/提取选项”保持一致的一级标题样式（无边框）。
+        translation_group = QtWidgets.QGroupBox(
+            "界面翻译（即时生效）", self
+        )
+        translation_group.setFlat(True)
+        translation_layout = QtWidgets.QVBoxLayout(translation_group)
         self.translation_enabled_check = QtWidgets.QCheckBox(
             f"启用插件翻译（翻译 {HOST_DISPLAY_NAME} 界面）",
             translation_group,
@@ -554,6 +1001,74 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         layout.addWidget(translation_group)
         self._update_translation_controls()
 
+        shortcut_group = QtWidgets.QGroupBox("快捷键", self)
+        shortcut_form = QtWidgets.QFormLayout(shortcut_group)
+        self.enable_shortcut_button = CaptureButton(
+            capture_mouse=False, parent=shortcut_group
+        )
+        self.enable_shortcut_button.setMinimumWidth(160)
+        self.enable_shortcut_button.set_value(ENABLE_SHORTCUT)
+        self.enable_shortcut_button.setToolTip(
+            "按 Esc 取消，按 Backspace 恢复默认"
+        )
+        self.enable_shortcut_button.key_captured.connect(
+            self._apply_enable_shortcut
+        )
+        self.enable_shortcut_button.restore_default.connect(
+            lambda: self._apply_enable_shortcut(ENABLE_SHORTCUT_DEFAULT)
+        )
+
+        self.edit_popup_button = CaptureButton(
+            capture_mouse=True, parent=shortcut_group
+        )
+        self.edit_popup_button.setMinimumWidth(160)
+        self.edit_popup_button.set_value(EDIT_TRIGGER.display_text())
+        self.edit_popup_button.setToolTip(
+            "按 Esc 取消，按 Backspace 恢复默认"
+        )
+        self.edit_popup_button.mouse_captured.connect(
+            self._apply_edit_trigger
+        )
+        self.edit_popup_button.invalid_combination.connect(
+            self._show_invalid_shortcut_hint
+        )
+        self.edit_popup_button.restore_default.connect(
+            self._restore_edit_trigger_default
+        )
+
+        # 两个快捷键选项横向等分：各自占据一行的一半，按钮在各自半区内展开。
+        shortcut_row = QtWidgets.QWidget(shortcut_group)
+        row_layout = QtWidgets.QHBoxLayout(shortcut_row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(24)
+
+        def make_shortcut_cell(label_text, button):
+            cell = QtWidgets.QWidget(shortcut_row)
+            cell_layout = QtWidgets.QHBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(8)
+            label = QtWidgets.QLabel(label_text, cell)
+            # 两个标签取相同最小宽度，保证两个按钮在各自半区内等宽。
+            label.setMinimumWidth(130)
+            cell_layout.addWidget(label)
+            cell_layout.addWidget(button, 1)
+            policy = button.sizePolicy()
+            policy.setHorizontalPolicy(EXPANDING_POLICY)
+            button.setSizePolicy(policy)
+            return cell
+
+        row_layout.addWidget(
+            make_shortcut_cell("启用/禁用插件翻译",
+                               self.enable_shortcut_button),
+            1,
+        )
+        row_layout.addWidget(
+            make_shortcut_cell("更改翻译弹窗", self.edit_popup_button),
+            1,
+        )
+        shortcut_form.addRow(shortcut_row)
+        layout.addWidget(shortcut_group)
+
         extract_group = QtWidgets.QGroupBox("提取设置", self)
         form = QtWidgets.QFormLayout(extract_group)
         self.folder_edit = QtWidgets.QLineEdit()
@@ -580,17 +1095,11 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
 
         options_group = QtWidgets.QGroupBox("提取选项", self)
         options_form = QtWidgets.QFormLayout(options_group)
-        filename_row = QtWidgets.QHBoxLayout()
-        self.filename_check = QtWidgets.QCheckBox("提取普通文件名")
+
+        self.filename_check = QtWidgets.QCheckBox("提取文件名")
         self.filename_check.setChecked(True)
         self.foldername_check = QtWidgets.QCheckBox("提取文件夹名")
         self.foldername_check.setChecked(False)
-        filename_row.addWidget(self.filename_check)
-        filename_row.addWidget(self.foldername_check)
-        filename_row.addStretch(1)
-        options_form.addRow("名称", filename_row)
-
-        attribute_row = QtWidgets.QHBoxLayout()
         self.label_check = QtWidgets.QCheckBox("提取 label")
         self.label_check.setChecked(True)
         self.text_check = QtWidgets.QCheckBox("提取 text")
@@ -601,39 +1110,41 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.description_check.setChecked(False)
         self.category_check = QtWidgets.QCheckBox("提取 category")
         self.category_check.setChecked(True)
-        self.keywords_check = QtWidgets.QCheckBox("提取 keywords（可能影响搜索）")
+        self.keywords_check = QtWidgets.QCheckBox("提取 keywords")
         self.keywords_check.setChecked(False)
-        self.values_check = QtWidgets.QCheckBox("提取下拉选项 values")
+        self.values_check = QtWidgets.QCheckBox("提取 values")
         self.values_check.setChecked(True)
         self.disabled_description_check = QtWidgets.QCheckBox(
-            "提取禁用说明 description_disabled"
+            "提取 description_disabled"
         )
         self.disabled_description_check.setChecked(False)
-        attribute_row.addWidget(self.label_check)
-        attribute_row.addWidget(self.text_check)
-        attribute_row.addWidget(self.group_check)
-        attribute_row.addWidget(self.description_check)
-        attribute_row.addWidget(self.category_check)
-        attribute_row.addWidget(self.keywords_check)
-        attribute_row.addWidget(self.values_check)
-        attribute_row.addWidget(self.disabled_description_check)
-        attribute_row.addStretch(1)
-        attribute_row.setSpacing(12)
-        attribute_widget = QtWidgets.QWidget(self)
-        attribute_grid = QtWidgets.QGridLayout(attribute_widget)
-        attribute_grid.setContentsMargins(0, 0, 0, 0)
-        while attribute_row.count():
-            item = attribute_row.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                index = attribute_grid.count()
-                attribute_grid.addWidget(widget, index // 3, index % 3)
-        options_form.addRow("词条属性", attribute_widget)
+
+        # 所有内容选项统一排列，每行 3 个。
+        content_widget = QtWidgets.QWidget(options_group)
+        content_grid = QtWidgets.QGridLayout(content_widget)
+        content_grid.setContentsMargins(0, 0, 0, 0)
+        content_grid.setHorizontalSpacing(24)
+        content_grid.setVerticalSpacing(6)
+        content_checks = [
+            self.filename_check,
+            self.foldername_check,
+            self.label_check,
+            self.text_check,
+            self.group_check,
+            self.values_check,
+            self.category_check,
+            self.keywords_check,
+            self.description_check,
+            self.disabled_description_check,
+        ]
+        for index, checkbox in enumerate(content_checks):
+            content_grid.addWidget(checkbox, index // 3, index % 3)
+        options_form.addRow(content_widget)
         layout.addWidget(options_group)
 
         note = QtWidgets.QLabel(
             "递归扫描 Substance 资源文件，并解析 SBS、SBSAR、SPSM、SPPR、"
-            "GLSL 等受支持格式。只提取不含中文且不在当前插件词库中的原文。\n"
+            "GLSL 等受支持格式。\n只提取不含中文且不在当前插件词库中的原文。\n"
             "若输出字典已经存在，将保留其中已有译文并追加新词条。",
             self,
         )
@@ -691,6 +1202,40 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 and is_safe(self.layers_translation_check)):
             self.layers_translation_check.setEnabled(master_on)
 
+    def _apply_enable_shortcut(self, value):
+        global ENABLE_SHORTCUT
+        ENABLE_SHORTCUT = str(value or "")
+        QtCore.QSettings().setValue(
+            "substance3d_chinese_translator/enable_shortcut",
+            ENABLE_SHORTCUT,
+        )
+        _apply_shortcuts()
+        self.enable_shortcut_button.set_value(ENABLE_SHORTCUT)
+
+    def _apply_edit_trigger(self, key_seq, button):
+        EDIT_TRIGGER.set_trigger(key_seq, button)
+        EDIT_TRIGGER.save()
+        EDIT_TRIGGER.apply_to_native()
+        _apply_shortcuts()
+        self.edit_popup_button.set_value(EDIT_TRIGGER.display_text())
+
+    def _restore_edit_trigger_default(self):
+        EDIT_TRIGGER.restore_default()
+        EDIT_TRIGGER.save()
+        EDIT_TRIGGER.apply_to_native()
+        _apply_shortcuts()
+        self.edit_popup_button.set_value(EDIT_TRIGGER.display_text())
+
+    def _show_invalid_shortcut_hint(self, message):
+        """快捷键不符合规则时弹出提示框（延后一拍，避免在事件过滤中弹窗）。"""
+        QtCore.QTimer.singleShot(
+            0,
+            lambda: (
+                QtWidgets.QMessageBox.warning(self, "快捷键无效", message)
+                if is_safe(self) else None
+            ),
+        )
+
     def _open_translations_directory(self):
         os.makedirs(TRANSLATIONS_DIR, exist_ok=True)
         QtGui.QDesktopServices.openUrl(
@@ -712,8 +1257,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         )
         if not output:
             return
-        if not output.lower().endswith("_zh.json"):
-            output = os.path.splitext(output)[0] + "_zh.json"
+        output = _ensure_zh_json_suffix(output)
 
         names = set()
         failures = []
@@ -734,7 +1278,9 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 value = value()
             return value.strip() if isinstance(value, str) else ""
 
-        def visit(resource):
+        def visit(resource, depth=0):
+            if depth > 64:
+                return
             identifier = None
             try:
                 identifier = resource.identifier()
@@ -746,8 +1292,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             seen.add(identity)
             try:
                 name = resource_name(resource, identifier)
-                translated_name = TRANSLATE_DICT.get(name, "").strip()
-                if _is_extractable_source(name) and not translated_name:
+                if _is_extractable(name):
                     names.add(name)
             except Exception as exc:
                 failures.append(str(exc))
@@ -755,7 +1300,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             if callable(children):
                 try:
                     for child in children():
-                        visit(child)
+                        visit(child, depth + 1)
                 except Exception as exc:
                     failures.append(str(exc))
 
@@ -773,15 +1318,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 )
                 QtWidgets.QApplication.processEvents()
 
-            existing = {}
-            if os.path.isfile(output):
-                try:
-                    with open(output, "r", encoding="utf-8-sig") as stream:
-                        old = json.load(stream)
-                    if old.get("$schema") == "sp-translation-v1":
-                        existing = old.get("translations", {})
-                except Exception:
-                    existing = {}
+            existing = _load_existing_translations(output)
             translations = {
                 name: existing.get(name, "") if isinstance(existing.get(name, ""), str) else ""
                 for name in names
@@ -819,18 +1356,13 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         )
         if not output:
             return
-        if not output.lower().endswith("_zh.json"):
-            output = os.path.splitext(output)[0] + "_zh.json"
+        output = _ensure_zh_json_suffix(output)
 
         names = set()
         failures = []
 
         def candidate(name):
-            value = str(name).strip()
-            if not value or "://" in value or "?version=" in value:
-                return False
-            translated = TRANSLATE_DICT.get(value, "").strip()
-            return _is_extractable_source(value) and not translated
+            return _is_extractable(name)
 
         QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
         try:
@@ -838,12 +1370,14 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             item_count = 0
 
             def _walk_model(model, prefix):
-                def visit(index, path):
+                def visit(index, path, depth):
                     nonlocal item_count
+                    if depth > 64:
+                        return
                     item_count += 1
                     try:
                         text = index.data(
-                            QtCore.Qt.ItemDataRole.DisplayRole
+                            ITEM_DATA_ROLE_DISPLAY
                         )
                     except Exception:
                         text = None
@@ -851,14 +1385,26 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                         value = text.strip()
                         if value and candidate(value):
                             names.add(value)
-                    for row in range(model.rowCount(index)):
-                        visit(
-                            model.index(row, 0, index),
-                            path + "/" + str(row),
-                        )
+                    try:
+                        row_count = model.rowCount(index)
+                    except Exception:
+                        return
+                    for row in range(row_count):
+                        try:
+                            child = model.index(row, 0, index)
+                        except Exception:
+                            continue
+                        if not child.isValid():
+                            continue
+                        visit(child, path + "/" + str(row), depth + 1)
 
                 for row in range(model.rowCount()):
-                    visit(model.index(row, 0), prefix + "/" + str(row))
+                    try:
+                        root_index = model.index(row, 0)
+                    except Exception:
+                        continue
+                    if root_index.isValid():
+                        visit(root_index, prefix + "/" + str(row), 0)
 
             def _drain_lazy(model):
                 """拉取懒加载模型尚未加载的行（canFetchMore/fetchMore）。"""
@@ -913,13 +1459,16 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                     # 加载该分类的全部条目。
                     leaf_indices = []
 
-                    def collect_leaves(index):
+                    def collect_leaves(index, depth=0):
+                        if depth > 64:
+                            return
                         if tree_model.rowCount(index) == 0:
                             leaf_indices.append(index)
                             return
                         for row in range(tree_model.rowCount(index)):
                             collect_leaves(
-                                tree_model.index(row, 0, index)
+                                tree_model.index(row, 0, index),
+                                depth + 1,
                             )
 
                     for row in range(tree_model.rowCount()):
@@ -954,15 +1503,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             if library_views == 0:
                 failures.append("未找到 Designer 界面中的资源库控件")
 
-            existing = {}
-            if os.path.isfile(output):
-                try:
-                    with open(output, "r", encoding="utf-8-sig") as stream:
-                        old = json.load(stream)
-                    if old.get("$schema") == "sp-translation-v1":
-                        existing = old.get("translations", {})
-                except Exception:
-                    existing = {}
+            existing = _load_existing_translations(output)
             translations = {
                 name: existing.get(name, "")
                 if isinstance(existing.get(name, ""), str) else ""
@@ -1016,8 +1557,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             self, "保存翻译包", initial, "Chinese translation package (*_zh.json)"
         )
         if path:
-            if not path.lower().endswith("_zh.json"):
-                path = os.path.splitext(path)[0] + "_zh.json"
+            path = _ensure_zh_json_suffix(path)
             self.output_edit.setText(path)
 
     def _set_running(self, running):
@@ -1111,6 +1651,8 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             )
             return
         excluded = set(TRANSLATE_DICT)
+        # control_ids_zh.json 的 ID 专属词条同样不应重复提取。
+        excluded.update(ID_TRANSLATE_DICTS)
         for translations in CONTROL_TRANSLATE_DICTS.values():
             excluded.update(translations)
         descriptor, request_path = tempfile.mkstemp(
@@ -1272,6 +1814,12 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             process.kill()
 
     def shutdown(self):
+        for button in (
+                getattr(self, "enable_shortcut_button", None),
+                getattr(self, "edit_popup_button", None),
+        ):
+            if is_safe(button) and button._capturing:
+                button._end_capture()
         self._cancelled = True
         process = self._extractor_process
         if is_safe(process):
@@ -1294,12 +1842,10 @@ def _set_layers_panel_translation(enabled):
         "substance3d_chinese_translator/translate_layers_panel",
         TRANSLATE_LAYERS_PANEL,
     )
-    dll = _load_native_delegate()
-    if dll is not None:
-        try:
-            dll.sp_delegate_set_translate_layers(int(TRANSLATE_LAYERS_PANEL))
-        except Exception as exc:
-            print(">>> 切换图层面板翻译失败:", exc)
+    _call_native(
+        "sp_delegate_set_translate_layers", int(TRANSLATE_LAYERS_PANEL),
+        label="切换图层面板翻译",
+    )
 
 
 def _set_fuzzy_match(enabled):
@@ -1314,12 +1860,10 @@ def _set_fuzzy_match(enabled):
         QtCore.QSettings().setValue(
             "substance3d_chinese_translator/fuzzy_match", FUZZY_MATCH_ENABLED
         )
-    dll = _load_native_delegate()
-    if dll is not None:
-        try:
-            dll.sp_delegate_set_fuzzy_match(int(FUZZY_MATCH_ENABLED))
-        except Exception as exc:
-            print(">>> 切换模糊匹配失败:", exc)
+    _call_native(
+        "sp_delegate_set_fuzzy_match", int(FUZZY_MATCH_ENABLED),
+        label="切换模糊匹配",
+    )
 
 
 def _set_fallback_scan(enabled):
@@ -1330,12 +1874,72 @@ def _set_fallback_scan(enabled):
         "substance3d_chinese_translator/fallback_scan",
         FALLBACK_SCAN_ENABLED,
     )
+    _call_native(
+        "sp_delegate_set_fallback_scan", int(FALLBACK_SCAN_ENABLED),
+        label="切换全量扫描兜底",
+    )
+
+
+def _show_edit_at_cursor():
+    """快捷键触发：对鼠标当前悬停的控件弹出“更改翻译”。"""
+    if IS_APP_QUITTING or IS_CLEANING:
+        return
+    _call_native("sp_delegate_show_edit_at_cursor", label="打开更改翻译")
+
+
+def _toggle_enable_shortcut():
+    """快捷键：切换面板里“启用插件翻译”复选框的勾选状态。"""
+    if IS_APP_QUITTING or IS_CLEANING:
+        return
+    print(">>> [快捷键] 启用/禁用快捷键已触发")
+    dialog = _label_extractor_dialog if is_safe(_label_extractor_dialog) else None
+    if dialog is not None:
+        dialog.translation_enabled_check.setChecked(
+            not dialog.translation_enabled_check.isChecked()
+        )
+    else:
+        _set_translation_enabled(not IS_TRANSLATION_ENABLED)
+
+
+_shortcut_callback = None
+
+
+@ctypes.CFUNCTYPE(None, ctypes.c_int)
+def _on_shortcut(kind):
+    """原生引擎识别到快捷键后的回调（0=启用/禁用，1=更改翻译弹窗）。"""
+    if kind == 0:
+        _toggle_enable_shortcut()
+    elif kind == 1:
+        _show_edit_at_cursor()
+
+
+def _apply_shortcuts():
+    """把快捷键配置与回调推送给原生引擎（识别与触发都在 C++）。"""
+    global _shortcut_callback
     dll = _load_native_delegate()
-    if dll is not None:
-        try:
-            dll.sp_delegate_set_fallback_scan(int(FALLBACK_SCAN_ENABLED))
-        except Exception as exc:
-            print(">>> 切换全量扫描兜底失败:", exc)
+    if dll is None:
+        return
+    try:
+        if _shortcut_callback is None:
+            _shortcut_callback = _on_shortcut
+        dll.sp_delegate_set_shortcut_callback(
+            ctypes.cast(_shortcut_callback, ctypes.c_void_p)
+        )
+        dll.sp_delegate_set_enable_shortcut(ENABLE_SHORTCUT or "")
+    except Exception as exc:
+        print(">>> 同步快捷键配置失败:", exc)
+
+
+def _clear_native_shortcuts():
+    """卸载时清空原生快捷键配置与回调，避免回调进入已卸载的模块。"""
+    dll = _load_native_delegate()
+    if dll is None:
+        return
+    try:
+        dll.sp_delegate_set_shortcut_callback(None)
+        dll.sp_delegate_set_enable_shortcut("")
+    except Exception as exc:
+        print(">>> 清理快捷键配置失败:", exc)
 
 
 def _set_translation_enabled(enabled):
@@ -1350,12 +1954,10 @@ def _set_translation_enabled(enabled):
         QtCore.QSettings().setValue(
             "substance3d_chinese_translator/enabled", IS_TRANSLATION_ENABLED
         )
-    dll = _load_native_delegate()
-    if dll is not None:
-        try:
-            dll.sp_delegate_set_enabled(int(IS_TRANSLATION_ENABLED))
-        except Exception as exc:
-            print(">>> 切换插件翻译总开关失败:", exc)
+    _call_native(
+        "sp_delegate_set_enabled", int(IS_TRANSLATION_ENABLED),
+        label="切换插件翻译总开关",
+    )
     if _enabled_action is not None:
         try:
             if _enabled_action.isChecked() != IS_TRANSLATION_ENABLED:
@@ -1364,6 +1966,9 @@ def _set_translation_enabled(enabled):
             pass
     if is_safe(_label_extractor_dialog):
         try:
+            _label_extractor_dialog.translation_enabled_check.setChecked(
+                IS_TRANSLATION_ENABLED
+            )
             _label_extractor_dialog._update_translation_controls()
         except Exception:
             pass
@@ -2040,17 +2645,18 @@ def _notify_update_result(main_window):
 def show_translation_tool():
     global _label_extractor_dialog
     if not is_safe(_label_extractor_dialog):
-        if HOST == "designer":
-            ui_manager = (
-                sd.getContext().getSDApplication().getQtForPythonUIMgr()
-            )
-            parent = ui_manager.getMainWindow()
-        else:
-            parent = sp.ui.get_main_window()
-        _label_extractor_dialog = ChineseTranslationToolDialog(parent)
+        _label_extractor_dialog = ChineseTranslationToolDialog(
+            _get_main_window()
+        )
     _label_extractor_dialog.fuzzy_match_check.setChecked(FUZZY_MATCH_ENABLED)
     _label_extractor_dialog.fallback_scan_check.setChecked(
         FALLBACK_SCAN_ENABLED
+    )
+    _label_extractor_dialog.enable_shortcut_button.set_value(
+        ENABLE_SHORTCUT
+    )
+    _label_extractor_dialog.edit_popup_button.set_value(
+        EDIT_TRIGGER.display_text()
     )
     _label_extractor_dialog.translation_enabled_check.setChecked(
         IS_TRANSLATION_ENABLED
@@ -2058,14 +2664,99 @@ def show_translation_tool():
     _label_extractor_dialog.show()
     _label_extractor_dialog.raise_()
     _label_extractor_dialog.activateWindow()
+    _apply_shortcuts()
 
 
 # ==========================================
 # 9. 生命周期的启动与清理
 # ==========================================
+def _disable_native_engine():
+    """停止原生翻译引擎并恢复界面原文。"""
+    if _native_delegate is not None:
+        try:
+            _native_delegate.sp_delegate_set_enabled(0)
+        except Exception:
+            pass
+
+
+def _destroy_tool_dialog():
+    """销毁翻译工具面板（若存在）。"""
+    global _label_extractor_dialog
+    if is_safe(_label_extractor_dialog):
+        try:
+            _label_extractor_dialog.shutdown()
+            _label_extractor_dialog.close()
+            delete(_label_extractor_dialog)
+        except Exception:
+            pass
+    _label_extractor_dialog = None
+
+
+def _remove_menu_action(action, menu_bar=None):
+    """从宿主菜单栏移除并删除菜单动作。"""
+    if not is_safe(action):
+        return
+    try:
+        if not is_safe(menu_bar):
+            main_window = _get_main_window()
+            if is_safe(main_window):
+                menu_bar = main_window.menuBar()
+        if is_safe(menu_bar):
+            menu_bar.removeAction(action)
+        delete(action)
+    except Exception:
+        pass
+
+
+def _teardown_engine():
+    """卸载时的公共清理：原生快捷键、原生引擎、工具面板。"""
+    global IS_APP_QUITTING, IS_CLEANING
+    IS_APP_QUITTING = True
+    IS_CLEANING = True
+    _clear_native_shortcuts()
+    _disable_native_engine()
+    _destroy_tool_dialog()
+
+
+def _start_native_engine():
+    """加载词库并启动原生引擎，返回 (词库是否OK, UI是否OK, json耗时, 同步耗时, UI耗时)。"""
+    _cleanup_pending_native_files()
+    phase = time.perf_counter()
+    load_translation_packages()
+    json_ms = (time.perf_counter() - phase) * 1000.0
+    phase = time.perf_counter()
+    dictionary_ok = _sync_native_dictionary()
+    sync_ms = (time.perf_counter() - phase) * 1000.0
+    phase = time.perf_counter()
+    ui_ok = _install_native_ui(QtWidgets.QApplication.instance())
+    ui_ms = (time.perf_counter() - phase) * 1000.0
+    if not dictionary_ok or not ui_ok:
+        print(
+            ">>> 原生翻译引擎未完全启用: "
+            f"dictionary={dictionary_ok}, ui={ui_ok}"
+        )
+    return dictionary_ok, ui_ok, json_ms, sync_ms, ui_ms
+
+
+def _schedule_update_notification(main_window):
+    """启动 2 秒后提示上次在线更新的结果。"""
+    QtCore.QTimer.singleShot(
+        2000, lambda window=main_window: _notify_update_result(window)
+    )
+
+
+def _register_tool_action(main_window):
+    """在宿主菜单栏添加“中文翻译工具”入口并返回该动作。"""
+    action = QAction("中文翻译工具", main_window)
+    action.setObjectName("substance3d_chinese_translator_tool_action")
+    action.triggered.connect(show_translation_tool)
+    main_window.menuBar().addAction(action)
+    return action
+
+
 def close_plugin():
     global IS_APP_QUITTING, IS_CLEANING, IS_TRANSLATION_ENABLED
-    global _label_extractor_dialog, _label_extractor_action, _label_extractor_menu_bar
+    global _label_extractor_action, _label_extractor_menu_bar
 
     if IS_CLEANING:
         return
@@ -2074,30 +2765,10 @@ def close_plugin():
     IS_APP_QUITTING = True
     IS_TRANSLATION_ENABLED = False
 
-    if is_safe(_label_extractor_dialog):
-        try:
-            _label_extractor_dialog.shutdown()
-            _label_extractor_dialog.close()
-            delete(_label_extractor_dialog)
-        except Exception:
-            pass
-    _label_extractor_dialog = None
-
-    if is_safe(_label_extractor_action):
-        try:
-            if is_safe(_label_extractor_menu_bar):
-                _label_extractor_menu_bar.removeAction(_label_extractor_action)
-            delete(_label_extractor_action)
-        except Exception:
-            pass
+    _teardown_engine()
+    _remove_menu_action(_label_extractor_action, _label_extractor_menu_bar)
     _label_extractor_action = None
     _label_extractor_menu_bar = None
-
-    if _native_delegate is not None:
-        try:
-            _native_delegate.sp_delegate_set_enabled(0)
-        except Exception:
-            pass
 
 
 # ==========================================
@@ -2106,25 +2777,18 @@ def close_plugin():
 def initializeSDPlugin():
     """Substance 3D Designer 插件入口。"""
     global _enabled_action, _tool_action, _startup_timer
+    global IS_APP_QUITTING, IS_CLEANING
 
-    context = sd.getContext()
-    application = context.getSDApplication()
-    ui_manager = application.getQtForPythonUIMgr()
-    if ui_manager is None:
+    main_window = _get_main_window()
+    if not is_safe(main_window):
         raise RuntimeError("Designer Qt UI manager is not available")
-    main_window = ui_manager.getMainWindow()
 
-    # 移除上次原地更新遗留的 .old 原生文件（与 Painter 一致）。
-    _cleanup_pending_native_files()
+    IS_APP_QUITTING = False
+    IS_CLEANING = False
+    _load_saved_settings()
 
-    load_translation_packages()
-    native_dictionary_ok = _sync_native_dictionary()
-    native_ui_ok = _install_native_ui(QtWidgets.QApplication.instance())
-    if not native_dictionary_ok or not native_ui_ok:
-        print(
-            ">>> 原生翻译引擎未完全启用: "
-            f"dictionary={native_dictionary_ok}, ui={native_ui_ok}"
-        )
+    startup_enabled = IS_TRANSLATION_ENABLED
+    _start_native_engine()
     # Designer 主窗口还在构建中，先禁用翻译，3 秒后自动启用。
     _set_translation_enabled(False)
 
@@ -2133,51 +2797,36 @@ def initializeSDPlugin():
     _enabled_action.setCheckable(True)
     _enabled_action.setChecked(False)
     _enabled_action.toggled.connect(_set_translation_enabled)
-    _tool_action = QAction("中文翻译工具", main_window)
-    _tool_action.triggered.connect(show_translation_tool)
-    main_window.menuBar().addAction(_tool_action)
+    _tool_action = _register_tool_action(main_window)
 
     _startup_timer = QtCore.QTimer(main_window)
     _startup_timer.setSingleShot(True)
-    _startup_timer.timeout.connect(lambda: _set_translation_enabled(True))
-    _startup_timer.start(3000)
-    # 更新成功提示与临时残留清理（与 Painter 一致）。
-    QtCore.QTimer.singleShot(
-        2000, lambda window=main_window: _notify_update_result(window)
+    _startup_timer.timeout.connect(
+        lambda: _set_translation_enabled(startup_enabled)
     )
+    _startup_timer.start(3000)
+    _apply_shortcuts()
+    _schedule_update_notification(main_window)
     print("[Designer 中文翻译] 插件已启动，版本", PLUGIN_VERSION)
 
 
 def uninitializeSDPlugin():
     """Substance 3D Designer 插件卸载入口。"""
-    global _enabled_action, _tool_action, _label_extractor_dialog
-    global _startup_timer
+    global _enabled_action, _tool_action, _startup_timer
 
-    if _native_delegate is not None:
+    if is_safe(_startup_timer):
         try:
-            _native_delegate.sp_delegate_set_enabled(0)
+            _startup_timer.stop()
+            delete(_startup_timer)
         except Exception:
             pass
-    if is_safe(_label_extractor_dialog):
-        try:
-            _label_extractor_dialog.shutdown()
-            _label_extractor_dialog.close()
-            delete(_label_extractor_dialog)
-        except Exception:
-            pass
-    _label_extractor_dialog = None
-    if is_safe(_tool_action):
-        try:
-            main_window = (
-                sd.getContext().getSDApplication()
-                .getQtForPythonUIMgr().getMainWindow()
-            )
-            main_window.menuBar().removeAction(_tool_action)
-        except Exception:
-            pass
-        delete(_tool_action)
+    _teardown_engine()
+    _remove_menu_action(_tool_action)
     if is_safe(_enabled_action):
-        delete(_enabled_action)
+        try:
+            delete(_enabled_action)
+        except Exception:
+            pass
     _enabled_action = None
     _tool_action = None
     _startup_timer = None
@@ -2207,9 +2856,14 @@ def _set_registered_plugin_display_name(main_window):
 
 
 def start_plugin():
-    global IS_APP_QUITTING, IS_CLEANING, IS_TRANSLATION_ENABLED
-    global TRANSLATE_LAYERS_PANEL, FUZZY_MATCH_ENABLED, FALLBACK_SCAN_ENABLED
+    global IS_APP_QUITTING, IS_CLEANING
     global _label_extractor_action, _label_extractor_menu_bar
+
+    # Painter 在启动过程中可能重复调用插件入口（已完整启动过就直接跳过），
+    # 避免词库被重复加载、菜单被重复注册。
+    if (not IS_CLEANING and _native_delegate is not None
+            and _label_extractor_action is not None):
+        return
 
     app = QtWidgets.QApplication.instance()
     if not is_safe(app):
@@ -2220,58 +2874,30 @@ def start_plugin():
 
     IS_APP_QUITTING = False
     IS_CLEANING = False
-    IS_TRANSLATION_ENABLED = _read_bool_setting(
-        "substance3d_chinese_translator/enabled", True
-    )
-    TRANSLATE_LAYERS_PANEL = _read_bool_setting(
-        "substance3d_chinese_translator/translate_layers_panel", True
-    )
-    FUZZY_MATCH_ENABLED = _read_bool_setting(
-        "substance3d_chinese_translator/fuzzy_match", True
-    )
-    FALLBACK_SCAN_ENABLED = _read_bool_setting(
-        "substance3d_chinese_translator/fallback_scan", False
-    )
+    _load_saved_settings()
 
-    # Remove native DLLs/EXEs renamed aside by a previous in-place update.
-    _cleanup_pending_native_files()
-
-    phase_started = time.perf_counter()
-    load_translation_packages()
-    json_load_ms = (time.perf_counter() - phase_started) * 1000.0
-
-    phase_started = time.perf_counter()
-    native_dictionary_ok = _sync_native_dictionary()
-    native_sync_ms = (time.perf_counter() - phase_started) * 1000.0
-
-    phase_started = time.perf_counter()
-    native_ui_ok = _install_native_ui(app)
-    native_ui_ms = (time.perf_counter() - phase_started) * 1000.0
-    if not native_dictionary_ok or not native_ui_ok:
-        print(
-            ">>> 原生翻译引擎未完全启用: "
-            f"dictionary={native_dictionary_ok}, ui={native_ui_ok}"
-        )
+    _, _, json_load_ms, native_sync_ms, native_ui_ms = _start_native_engine()
     if not IS_TRANSLATION_ENABLED:
         _set_translation_enabled(False)
 
-    main_window = sp.ui.get_main_window()
-    # Painter starts this plugin while it is still populating the Python menu.
-    # Renaming synchronously re-enters that construction and can invalidate
-    # Painter's insertion separator, so wait until the menu build returns.
-    QtCore.QTimer.singleShot(
-        0, lambda window=main_window: _set_registered_plugin_display_name(window)
-    )
-    QtCore.QTimer.singleShot(
-        2000, lambda window=main_window: _notify_update_result(window)
-    )
-    _label_extractor_action = QAction("中文翻译工具", main_window)
-    _label_extractor_action.setObjectName(
-        "substance3d_chinese_translator_tool_action"
-    )
-    _label_extractor_action.triggered.connect(show_translation_tool)
-    _label_extractor_menu_bar = main_window.menuBar()
-    _label_extractor_menu_bar.addAction(_label_extractor_action)
+    main_window = _get_main_window()
+    if is_safe(main_window):
+        # Painter starts this plugin while it is still populating the Python
+        # menu. Renaming synchronously re-enters that construction and can
+        # invalidate Painter's insertion separator, so wait until the menu
+        # build returns.
+        QtCore.QTimer.singleShot(
+            0,
+            lambda window=main_window: (
+                _set_registered_plugin_display_name(window)
+            ),
+        )
+        _schedule_update_notification(main_window)
+        _label_extractor_action = _register_tool_action(main_window)
+        _label_extractor_menu_bar = main_window.menuBar()
+    else:
+        print(">>> 未获取到主窗口，跳过翻译工具菜单注册")
+    _apply_shortcuts()
 
     total_ms = (time.perf_counter() - startup_started) * 1000.0
     print(
@@ -2292,3 +2918,9 @@ def start_plugin():
     # From this point on Python never reads, writes, or paints Painter-owned
     # controls. The native engine owns widget events, item
     # delegates, hover originals, dynamic refresh, and resource-tree painting.
+
+
+def reload_plugin():
+    """Painter 的“重新加载插件”入口：先完整清理，再重新启动。"""
+    close_plugin()
+    start_plugin()

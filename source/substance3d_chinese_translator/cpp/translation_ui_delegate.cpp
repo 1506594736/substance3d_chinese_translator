@@ -1,4 +1,5 @@
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDateTime>
 #include <QtCore/QEvent>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -9,11 +10,15 @@
 #include <QtCore/QPointer>
 #include <QtCore/QSaveFile>
 #include <QtCore/QSet>
+#include <QtCore/QStringList>
 #include <QtCore/QTextStream>
 #include <QtCore/QTimer>
 #include <QtCore/QVariant>
 #include <QtGui/QHelpEvent>
 #include <QtGui/QContextMenuEvent>
+#include <QtGui/QCursor>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QKeySequence>
 #include <QtGui/QMouseEvent>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtGui/QAction>
@@ -61,6 +66,7 @@
 #include <intrin.h>
 
 #include <typeinfo>
+#include "extraction_rules.h"
 
 
 namespace {
@@ -75,6 +81,112 @@ QPointer<QWidget> g_originalTooltipOwner;
 bool g_enabled = true;
 bool g_translateLayersPanel = true;
 bool g_fuzzyMatchEnabled = true;
+QKeySequence g_editKey = QKeySequence(QStringLiteral("Ctrl"));
+int g_heldEditKey = 0;
+Qt::MouseButton g_editButton = Qt::RightButton;
+QKeySequence g_enableShortcut;
+QKeySequence g_editKeyShortcut;
+// 快捷键改为“松开时触发一次”：按下时只记录，KeyRelease 时再触发，
+// 避免按住 F10/F9 等键时自动重复事件让回调风暴式反复执行。
+int g_enableShortcutArmed = 0;
+int g_editKeyShortcutArmed = 0;
+qint64 g_lastEnableFireMs = 0;
+qint64 g_lastEditFireMs = 0;
+// 编辑弹窗打开期间忽略新的编辑触发，避免按住组合键连点鼠标时
+// 叠出多个“更改翻译”窗口。
+bool g_editDialogOpen = false;
+using ShortcutCallback = void (*)(int);
+ShortcutCallback g_shortcutCallback = nullptr;
+
+bool shortcutMatches(const QKeySequence &target, int key,
+                     Qt::KeyboardModifiers modifiers) {
+    if (target.isEmpty())
+        return false;
+    return target.matches(
+               QKeySequence(key | static_cast<int>(modifiers)))
+           == QKeySequence::ExactMatch;
+}
+
+bool appClosingDown();
+
+void shortcutDiag(const QString &line) {
+    QFile out(QDir::temp().filePath(QStringLiteral("sp_shortcut_diag.log")));
+    if (out.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        QTextStream stream(&out);
+        stream << QDateTime::currentMSecsSinceEpoch() << " " << line << "\n";
+    }
+}
+
+void fireShortcut(int kind) {
+    // 应用正在关闭时，即使有排队中的回调也不再调用 Python，
+    // 避免 Python 模块卸载过程中被回调触发导致 shiboken 崩溃。
+    if (appClosingDown())
+        return;
+    // 防抖：无论事件如何重复，同一快捷键 100ms 内只触发一次。
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (kind == 0) {
+        if (now - g_lastEnableFireMs < 100)
+            return;
+        g_lastEnableFireMs = now;
+    } else {
+        if (now - g_lastEditFireMs < 100)
+            return;
+        g_lastEditFireMs = now;
+    }
+    shortcutDiag(QStringLiteral("FIRE kind=%1").arg(kind));
+    if (g_shortcutCallback)
+        g_shortcutCallback(kind);
+}
+
+// 判断 Qt 按键是否在物理上仍处于按下状态。用于“按键+鼠标”组合触发：
+// 只凭最后一次 KeyPress 的记录判断会产生残留状态，松开后的普通单击
+// 也会被误判为组合键（例如设置 Z+左键后，单个左键误弹“更改翻译”）。
+bool heldKeyIsDown(int qtKey) {
+    UINT vk = 0;
+    if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z) {
+        vk = static_cast<UINT>('A' + (qtKey - Qt::Key_A));
+    } else if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9) {
+        vk = static_cast<UINT>('0' + (qtKey - Qt::Key_0));
+    } else if (qtKey >= Qt::Key_F1 && qtKey <= Qt::Key_F24) {
+        vk = VK_F1 + static_cast<UINT>(qtKey - Qt::Key_F1);
+    } else {
+        switch (qtKey) {
+        case Qt::Key_Escape: vk = VK_ESCAPE; break;
+        case Qt::Key_Tab:
+        case Qt::Key_Backtab: vk = VK_TAB; break;
+        case Qt::Key_Return:
+        case Qt::Key_Enter: vk = VK_RETURN; break;
+        case Qt::Key_Backspace: vk = VK_BACK; break;
+        case Qt::Key_Delete: vk = VK_DELETE; break;
+        case Qt::Key_Insert: vk = VK_INSERT; break;
+        case Qt::Key_Home: vk = VK_HOME; break;
+        case Qt::Key_End: vk = VK_END; break;
+        case Qt::Key_PageUp: vk = VK_PRIOR; break;
+        case Qt::Key_PageDown: vk = VK_NEXT; break;
+        case Qt::Key_Left: vk = VK_LEFT; break;
+        case Qt::Key_Right: vk = VK_RIGHT; break;
+        case Qt::Key_Up: vk = VK_UP; break;
+        case Qt::Key_Down: vk = VK_DOWN; break;
+        case Qt::Key_Space: vk = VK_SPACE; break;
+        case Qt::Key_Minus: vk = VK_OEM_MINUS; break;
+        case Qt::Key_Equal: vk = VK_OEM_PLUS; break;
+        case Qt::Key_BracketLeft: vk = VK_OEM_4; break;
+        case Qt::Key_BracketRight: vk = VK_OEM_6; break;
+        case Qt::Key_Semicolon: vk = VK_OEM_1; break;
+        case Qt::Key_Apostrophe: vk = VK_OEM_7; break;
+        case Qt::Key_Comma: vk = VK_OEM_COMMA; break;
+        case Qt::Key_Period: vk = VK_OEM_PERIOD; break;
+        case Qt::Key_Slash: vk = VK_OEM_2; break;
+        case Qt::Key_Backslash: vk = VK_OEM_5; break;
+        case Qt::Key_QuoteLeft: vk = VK_OEM_3; break;
+        default:
+            // 无法映射的按键不额外拦截，保留 Qt 事件状态判断。
+            return true;
+        }
+    }
+    return (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0;
+}
+
 QHash<QString, QString> g_fuzzyResolved;
 QHash<QString, QString> g_translationsFolded;
 QHash<QString, QHash<QString, QString>> g_controlTranslationsFolded;
@@ -295,8 +407,13 @@ QString translated(const QString &text, bool removeMnemonic = false,
     // 1. 控件 ID 专属词库（id_types_zh.json，键为完整 ID 字符串）。
     if (!controlId.isEmpty()) {
         const auto idHit = g_idTranslations.constFind(controlId);
-        if (idHit != g_idTranslations.cend())
+        if (idHit != g_idTranslations.cend()) {
+            // 精确 ID 也可能映射为 _skip_（表示该控件下任何原文都不翻译），
+            // 不能把 _skip_ 本身当作译文显示。
+            if (idHit.value() == QStringLiteral("_skip_"))
+                return {};
             return idHit.value();
+        }
         // 跳过翻译标记：键为“上级类名||自身类名||objectName||*”
         // （* 表示任意原文）、值为 "_skip_"，
         // 表示该控件下任何原文都不翻译（例如导入对话框的
@@ -624,11 +741,17 @@ bool isDesignerGraphView(QGraphicsView *view) {
 // The graph's node text is substituted while the view paints, so toggling the
 // plug-in must schedule a repaint of every Designer graph view; otherwise the
 // previously painted translation (or original) stays on screen.
-void refreshGraphViews() {
+bool appClosingDown() {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    if (QCoreApplication::closingDown())
-        return;
+    return QCoreApplication::closingDown();
+#else
+    return false;
 #endif
+}
+
+void refreshGraphViews() {
+    if (appClosingDown())
+        return;
     for (QWidget *widget : QApplication::allWidgets()) {
         if (!widget || !widget->isVisible())
             continue;
@@ -1804,12 +1927,16 @@ bool saveTranslation(const QString &source, const QString &target,
         return false;
     }
 
-    if (!existed && translationPath == g_fallbackPath) {
+    if (!existed) {
         root.insert(QStringLiteral("$schema"), QStringLiteral("sp-translation-v1"));
-        root.insert(QStringLiteral("id"), QStringLiteral("user-added-translations"));
+        root.insert(QStringLiteral("id"), translationPath == g_fallbackPath
+            ? QStringLiteral("user-added-translations")
+            : QStringLiteral("plugin-edited-translations"));
         root.insert(QStringLiteral("language"), QStringLiteral("zh-CN"));
         root.insert(QStringLiteral("description"),
-                    QStringLiteral("Translations added from Substance 3D Painter"));
+                    translationPath == g_fallbackPath
+            ? QStringLiteral("Translations added from Substance 3D Painter")
+            : QStringLiteral("Translations edited from Substance 3D Painter"));
     } else if (root.value(QStringLiteral("$schema")).toString() !=
                QStringLiteral("sp-translation-v1")) {
         if (error)
@@ -1864,6 +1991,52 @@ void refreshTranslatedViews() {
         if (widget->isVisible())
             translateWidget(widget);
     }
+}
+
+// 右键弹窗的修饰键是否匹配（可自定义；NoModifier 表示禁用右键弹窗）。
+QString modifierOnlySequence(Qt::KeyboardModifiers modifiers) {
+    QStringList parts;
+    if (modifiers & Qt::ControlModifier) {
+        parts << QStringLiteral("Ctrl");
+    }
+    if (modifiers & Qt::AltModifier) {
+        parts << QStringLiteral("Alt");
+    }
+    if (modifiers & Qt::ShiftModifier) {
+        parts << QStringLiteral("Shift");
+    }
+    return parts.join(QLatin1Char('+'));
+}
+
+bool editKeyActive(Qt::KeyboardModifiers modifiers) {
+    if (g_editKey.isEmpty())
+        return false;
+    const QString modifierOnly = modifierOnlySequence(modifiers);
+    const QString pressed = g_heldEditKey
+        ? QKeySequence(g_heldEditKey | int(modifiers)).toString()
+        : modifierOnly;
+    if (pressed.isEmpty() || pressed != g_editKey.toString()) {
+        // 记录的最后按键可能早已松开（残留状态，例如从 Z+左键 切回
+        // Ctrl+右键 后 Z 的松开事件丢失）：残留键会把组合拼成
+        // “Ctrl+Z” 导致 Ctrl+右键 失效。确认该键已不在物理按下状态时
+        // 清掉残留，并按纯修饰键重新判定当前这一次触发。
+        if (g_heldEditKey != 0 && !heldKeyIsDown(g_heldEditKey)) {
+            g_heldEditKey = 0;
+            if (!modifierOnly.isEmpty() &&
+                modifierOnly == g_editKey.toString())
+                return true;
+        }
+        return false;
+    }
+    if (g_heldEditKey) {
+        // 残留的“最后按下键”会导致松开后的单击误触发：只有配置键
+        // 在物理上仍处于按下状态时才认为组合成立；否则清掉残留状态。
+        if (!heldKeyIsDown(g_heldEditKey)) {
+            g_heldEditKey = 0;
+            return false;
+        }
+    }
+    return true;
 }
 
 void restoreTranslatedWidget(QWidget *widget) {
@@ -1931,10 +2104,8 @@ void restoreTranslatedWidget(QWidget *widget) {
 }
 
 void restoreLayersPanelOriginals() {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    if (QCoreApplication::closingDown())
+    if (appClosingDown())
         return;
-#endif
     for (QWidget *widget : QApplication::allWidgets()) {
         if (widget && isInsideLayersPanel(widget))
             restoreTranslatedWidget(widget);
@@ -1942,10 +2113,8 @@ void restoreLayersPanelOriginals() {
 }
 
 void restoreAllTranslatedWidgets() {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    if (QCoreApplication::closingDown())
+    if (appClosingDown())
         return;
-#endif
     for (QWidget *widget : QApplication::allWidgets()) {
         if (widget)
             restoreTranslatedWidget(widget);
@@ -2130,10 +2299,16 @@ void editTranslation(const QString &source, const QString &uniqueId,
     QObject::connect(buttons, &QDialogButtonBox::rejected,
                      &dialog, &QDialog::reject);
     layout->addWidget(buttons);
+
+    // 输入框始终获得焦点并全选，保持原有体验；触发键若仍按着，
+    // 由应用级过滤器在松开前只拦截该键的字符/输入法事件。
     targetEdit->selectAll();
     targetEdit->setFocus();
 
-    if (dialog.exec() != QDialog::Accepted)
+    g_editDialogOpen = true;
+    const int dialogResult = dialog.exec();
+    g_editDialogOpen = false;
+    if (dialogResult != QDialog::Accepted)
         return;
     const QString target = targetEdit->text().trimmed();
     if (target.isEmpty() || target == current) {
@@ -2167,6 +2342,8 @@ void editTranslation(const QString &source, const QString &uniqueId,
             g_controlTranslations[scopedControlType].insert(source, target);
         g_originals.insert(target, source);
     }
+    // 新词条可能让此前缓存为空结果的模糊/工具提示匹配立即生效。
+    g_fuzzyResolved.clear();
     refreshTranslatedViews();
 }
 
@@ -2175,9 +2352,74 @@ public:
     using QObject::QObject;
 protected:
     bool eventFilter(QObject *object, QEvent *event) override {
+        const auto type = event->type();
+        // 快捷键识别：只“看见”组合键，动作延后一拍执行且不吞按键，
+        // 避免在事件过滤器中同步弹出模态窗口，也不抢占宿主同名快捷键。
+        if (type == QEvent::ShortcutOverride) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            const int key = keyEvent->key();
+            const Qt::KeyboardModifiers modifiers = keyEvent->modifiers();
+            if (shortcutMatches(g_enableShortcut, key, modifiers)) {
+                // 只记录按下，待 KeyRelease 时触发一次。
+                g_enableShortcutArmed = key;
+                shortcutDiag(QStringLiteral("ARM0 key=%1").arg(key));
+            } else if (shortcutMatches(g_editKeyShortcut, key, modifiers)) {
+                g_editKeyShortcutArmed = key;
+                shortcutDiag(QStringLiteral("ARM1 key=%1").arg(key));
+            }
+            return false;
+        }
+        // 记录当前按住的非修饰键，供“键盘序列+鼠标按键”触发判定。
+        if (type == QEvent::KeyPress) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            const int key = keyEvent->key();
+            if (key != Qt::Key_Control && key != Qt::Key_Shift &&
+                key != Qt::Key_Alt && key != Qt::Key_Meta)
+                g_heldEditKey = key;
+            return false;
+        }
+        if (type == QEvent::KeyRelease) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            if (g_heldEditKey && keyEvent->key() == g_heldEditKey)
+                g_heldEditKey = 0;
+            if (g_enableShortcutArmed != 0 &&
+                keyEvent->key() == g_enableShortcutArmed) {
+                if (heldKeyIsDown(g_enableShortcutArmed)) {
+                    // 物理上仍按着：宿主（F10 是菜单键）会合成重复的
+                    // “松开”事件，忽略它们，等真正松开再触发。
+                    shortcutDiag(QStringLiteral("KR0 spurious key=%1")
+                                     .arg(keyEvent->key()));
+                } else {
+                    g_enableShortcutArmed = 0;
+                    shortcutDiag(QStringLiteral("KR0 real key=%1")
+                                     .arg(keyEvent->key()));
+                    QTimer::singleShot(0, qApp, [] { fireShortcut(0); });
+                }
+            }
+            if (g_editKeyShortcutArmed != 0 &&
+                keyEvent->key() == g_editKeyShortcutArmed) {
+                if (heldKeyIsDown(g_editKeyShortcutArmed)) {
+                    shortcutDiag(QStringLiteral("KR1 spurious key=%1")
+                                     .arg(keyEvent->key()));
+                } else {
+                    g_editKeyShortcutArmed = 0;
+                    shortcutDiag(QStringLiteral("KR1 real key=%1")
+                                     .arg(keyEvent->key()));
+                    QTimer::singleShot(0, qApp, [] { fireShortcut(1); });
+                }
+            }
+            return false;
+        }
+        // 应用/窗口失焦时按键松开事件可能丢失，直接清掉残留按键，
+        // 避免之后一次普通鼠标单击被误判为“按键+鼠标”组合。
+        if (type == QEvent::WindowDeactivate) {
+            g_heldEditKey = 0;
+            g_enableShortcutArmed = 0;
+            g_editKeyShortcutArmed = 0;
+            return false;
+        }
         if (!g_enabled)
             return false;
-        const auto type = event->type();
         if (type == QEvent::Leave || type == QEvent::Hide) {
             auto *widget = qobject_cast<QWidget *>(object);
             if (widget && g_originalTooltipOwner == widget) {
@@ -2188,8 +2430,9 @@ protected:
         if (type == QEvent::MouseButtonPress) {
             auto *mouse = static_cast<QMouseEvent *>(event);
             auto *menu = qobject_cast<QMenu *>(object);
-            if (menu && mouse->button() == Qt::RightButton &&
-                (mouse->modifiers() & Qt::ControlModifier)) {
+            if (menu && mouse->button() == g_editButton &&
+                g_editButton == Qt::RightButton &&
+                editKeyActive(mouse->modifiers())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                 const QPoint mousePos = mouse->position().toPoint();
 #else
@@ -2197,6 +2440,8 @@ protected:
 #endif
                 const QString source = contextSourceAt(menu, mousePos);
                 if (!source.isEmpty()) {
+                    if (g_editDialogOpen)
+                        return false;
                     const QString uniqueId = controlUniqueId(menu, source);
                     const QString panelName = controlPanelName(menu);
                     QPointer<QWidget> safeWindow(menu->window());
@@ -2211,6 +2456,37 @@ protected:
                     event->accept();
                     return true;
                 }
+            } else if (!menu && mouse->button() == g_editButton &&
+                       (g_editButton == Qt::LeftButton ||
+                        g_editButton == Qt::MiddleButton) &&
+                       editKeyActive(mouse->modifiers())) {
+                // 左键/中键组合：对普通控件同样弹出“更改翻译”。
+                auto *widget = qobject_cast<QWidget *>(object);
+                if (widget) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                    const QPoint mousePos = mouse->position().toPoint();
+#else
+                    const QPoint mousePos = mouse->pos();
+#endif
+                    const QString source = contextSourceAt(widget, mousePos);
+                    if (!source.isEmpty()) {
+                        if (g_editDialogOpen)
+                            return false;
+                        const QString uniqueId =
+                            controlUniqueId(widget, source);
+                        const QString panelName = controlPanelName(widget);
+                        QPointer<QWidget> safeWidget(widget);
+                        QTimer::singleShot(
+                            0, qApp,
+                            [source, uniqueId, panelName, safeWidget]() {
+                            if (safeWidget)
+                                editTranslation(source, uniqueId, panelName,
+                                                safeWidget.data());
+                        });
+                        event->accept();
+                        return true;
+                    }
+                }
             }
         }
         if (type == QEvent::ContextMenu) {
@@ -2218,11 +2494,14 @@ protected:
             // A plain right-click belongs entirely to Painter. Translation
             // editing is an explicit Ctrl+right-click shortcut so it cannot
             // alter or compete with Painter's native context menus.
-            if (!(context->modifiers() & Qt::ControlModifier))
+            if (g_editButton != Qt::RightButton ||
+                !editKeyActive(context->modifiers()))
                 return false;
             auto *widget = qobject_cast<QWidget *>(object);
             const QString source = contextSourceAt(widget, context->pos());
             if (source.isEmpty())
+                return false;
+            if (g_editDialogOpen)
                 return false;
             const QString uniqueId = controlUniqueId(widget, source);
             const QString panelName = controlPanelName(widget);
@@ -2293,10 +2572,8 @@ bool g_fallbackScanEnabled = false;
 void scanVisibleWidgets() {
     if (!g_enabled)
         return;
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    if (QCoreApplication::closingDown())
+    if (appClosingDown())
         return;
-#endif
     for (QWidget *widget : QApplication::allWidgets()) {
         if (widget && widget->isVisible())
             translateWidget(widget);
@@ -2312,6 +2589,11 @@ bool pinThisDll() {
 } // namespace
 
 extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 10; }
+
+extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
+    // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
+    return L"20260810-1750-shortcut-physical-debounce100";
+}
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
     const wchar_t *source, const wchar_t *path) {
@@ -2359,6 +2641,68 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_scan(
         g_fallbackTimer->stop();
 }
 
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_edit_modifier(
+    int mask) {
+    // 旧版兼容：修饰键掩码转成键盘序列。
+    g_editKey = QKeySequence(modifierOnlySequence(
+        Qt::KeyboardModifiers(mask)));
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_edit_key(
+    const wchar_t *sequence) {
+    g_editKey = sequence
+        ? QKeySequence(QString::fromWCharArray(sequence))
+        : QKeySequence();
+    // 触发方式变更后，旧的“最后按下键”状态不再有意义，立即清掉，
+    // 避免从“Z+左键”切回“Ctrl+右键”后残留 Z 导致右键触发失效。
+    g_heldEditKey = 0;
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_edit_button(
+    int button) {
+    g_editButton = Qt::MouseButton(button);
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_shortcut_callback(
+    void *callback) {
+    g_shortcutCallback = reinterpret_cast<ShortcutCallback>(callback);
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enable_shortcut(
+    const wchar_t *sequence) {
+    g_enableShortcut = sequence
+        ? QKeySequence(QString::fromWCharArray(sequence))
+        : QKeySequence();
+    g_enableShortcutArmed = 0;
+    // 每次插件启动/配置快捷键时清空诊断日志，便于观察单次测试。
+    QFile::remove(QDir::temp().filePath(QStringLiteral("sp_shortcut_diag.log")));
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_edit_key_shortcut(
+    const wchar_t *sequence) {
+    g_editKeyShortcut = sequence
+        ? QKeySequence(QString::fromWCharArray(sequence))
+        : QKeySequence();
+    g_editKeyShortcutArmed = 0;
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_show_edit_at_cursor() {
+    if (!g_enabled)
+        return;
+    QWidget *widget = QApplication::widgetAt(QCursor::pos());
+    if (!widget)
+        return;
+    const QPoint position = widget->mapFromGlobal(QCursor::pos());
+    const QString source = contextSourceAt(widget, position);
+    if (source.isEmpty())
+        return;
+    if (g_editDialogOpen)
+        return;
+    const QString uniqueId = controlUniqueId(widget, source);
+    const QString panelName = controlPanelName(widget);
+    editTranslation(source, uniqueId, panelName, widget->window());
+}
+
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_reserve_translations(
     int count) {
     if (count > 0) {
@@ -2366,6 +2710,23 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_reserve_translations(
         g_originals.reserve(count);
         g_translationsFolded.reserve(count);
     }
+}
+
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_is_extractable(
+    const wchar_t *text) {
+    if (!text)
+        return 0;
+    const QString value = QString::fromWCharArray(text).trimmed();
+    if (!extraction_rules::validSource(value.toStdString()))
+        return 0;
+    if (g_translations.contains(value) || g_idTranslations.contains(value))
+        return 0;
+    for (auto it = g_controlTranslations.cbegin();
+         it != g_controlTranslations.cend(); ++it) {
+        if (it.value().contains(value))
+            return 0;
+    }
+    return 1;
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_translation(

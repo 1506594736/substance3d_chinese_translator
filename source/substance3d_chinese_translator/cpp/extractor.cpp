@@ -3,6 +3,7 @@
 #include <hdf5.h>
 #include <nlohmann/json.hpp>
 #include <pugixml.hpp>
+#include "extraction_rules.h"
 
 #include <algorithm>
 #include <atomic>
@@ -29,11 +30,14 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace {
+using namespace extraction_rules;
 constexpr std::size_t kMaxArchiveMembers = 50000;
 constexpr std::size_t kMaxNestedArchives = 128;
 constexpr int kMaxNestedDepth = 3;
 constexpr std::size_t kMaxParsedFileBytes = 64 * 1024 * 1024;
 constexpr std::size_t kMaxDatasetBytes = 256 * 1024 * 1024;
+constexpr std::uint64_t kMaxArchiveMemberBytes = 512ULL * 1024 * 1024;
+constexpr std::uint64_t kMaxArchiveTotalBytes = 4ULL * 1024 * 1024 * 1024;
 
 struct Request {
     fs::path source;
@@ -92,63 +96,6 @@ void emit(const json &message) {
     std::cout << message.dump() << '\n' << std::flush;
 }
 
-bool containsHan(const std::string &text) {
-    // UTF-8 encodings of CJK Unified Ideographs begin in E3-E9. Decode only
-    // enough to check the ranges used by the Python plug-in.
-    std::size_t i = 0;
-    while (i < text.size()) {
-        const unsigned char first = static_cast<unsigned char>(text[i]);
-        std::uint32_t codepoint = first;
-        std::size_t length = 1;
-        if ((first & 0xE0U) == 0xC0U) {
-            codepoint = first & 0x1FU;
-            length = 2;
-        } else if ((first & 0xF0U) == 0xE0U) {
-            codepoint = first & 0x0FU;
-            length = 3;
-        } else if ((first & 0xF8U) == 0xF0U) {
-            codepoint = first & 0x07U;
-            length = 4;
-        }
-        if (i + length > text.size())
-            break;
-        for (std::size_t j = 1; j < length; ++j)
-            codepoint = (codepoint << 6U) |
-                (static_cast<unsigned char>(text[i + j]) & 0x3FU);
-        if (codepoint >= 0x3400U && codepoint <= 0x9FFFU)
-            return true;
-        i += length;
-    }
-    return false;
-}
-
-std::string trim(std::string value) {
-    const auto space = [](unsigned char c) { return std::isspace(c) != 0; };
-    value.erase(value.begin(),
-                std::find_if(value.begin(), value.end(),
-                             [&](char c) { return !space(static_cast<unsigned char>(c)); }));
-    value.erase(std::find_if(value.rbegin(), value.rend(),
-                             [&](char c) { return !space(static_cast<unsigned char>(c)); })
-                    .base(),
-                value.end());
-    return value;
-}
-
-bool looksLikeAssetUrl(const std::string &value) {
-    return value.find("?version=") != std::string::npos ||
-           (!value.empty() && value.front() == '/' &&
-            value.find('?') != std::string::npos);
-}
-
-bool validSource(const std::string &source) {
-    static const std::regex numeric(
-        R"(^[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)(?:[eE][+-]?\d+)?%?$)");
-    const std::string value = trim(source);
-    return !value.empty() && !containsHan(value) &&
-           !looksLikeAssetUrl(value) &&
-           !std::regex_match(value, numeric);
-}
-
 void addTerm(State &state, const std::string &raw) {
     const std::string value = trim(raw);
     if (validSource(value) && state.request.excluded.count(value) == 0)
@@ -198,7 +145,7 @@ bool looksLikeXml(const fs::path &path) {
             break;
         ++position;
     }
-    return position != std::string::npos && prefix[position] == '<';
+    return position < prefix.size() && prefix[position] == '<';
 }
 
 bool selectedAttribute(const State &state, const std::string &name) {
@@ -457,12 +404,15 @@ void extractArchive(const fs::path &source, const fs::path &destination) {
         throw std::runtime_error(message);
     }
     std::size_t members = 0;
+    std::uint64_t memberBytes = 0;
+    std::uint64_t archiveBytes = 0;
     archive_entry *entry = nullptr;
     while (archive_read_next_header(reader, &entry) == ARCHIVE_OK) {
         if (++members > kMaxArchiveMembers) {
             archive_read_free(reader);
             throw std::runtime_error("archive contains more than 50000 entries");
         }
+        memberBytes = 0;
         const wchar_t *wideName = archive_entry_pathname_w(entry);
         const char *utf8Name = archive_entry_pathname_utf8(entry);
         const fs::path relative = wideName ? fs::path(wideName)
@@ -500,9 +450,30 @@ void extractArchive(const fs::path &source, const fs::path &destination) {
                 archive_read_free(reader);
                 throw std::runtime_error(message);
             }
+            memberBytes += size;
+            archiveBytes += size;
+            if (memberBytes > kMaxArchiveMemberBytes) {
+                archive_read_free(reader);
+                throw std::runtime_error(
+                    "archive member exceeds the size limit");
+            }
+            if (archiveBytes > kMaxArchiveTotalBytes) {
+                archive_read_free(reader);
+                throw std::runtime_error(
+                    "archive extraction exceeds the total size limit");
+            }
             file.seekp(offset);
             file.write(static_cast<const char *>(buffer),
                        static_cast<std::streamsize>(size));
+            if (!file) {
+                archive_read_free(reader);
+                throw std::runtime_error("failed to write extracted file");
+            }
+        }
+        file.flush();
+        if (!file) {
+            archive_read_free(reader);
+            throw std::runtime_error("failed to flush extracted file");
         }
     }
     archive_read_free(reader);
@@ -522,6 +493,14 @@ herr_t hdfVisitor(hid_t object, const char *name, const H5O_info2_t *info,
             throw std::runtime_error("cannot open HDF5 dataset");
         const hid_t type = H5Dget_type(dataset);
         const hid_t space = H5Dget_space(dataset);
+        if (type < 0 || space < 0) {
+            if (type >= 0)
+                H5Tclose(type);
+            if (space >= 0)
+                H5Sclose(space);
+            H5Dclose(dataset);
+            throw std::runtime_error("cannot inspect HDF5 dataset");
+        }
         const hssize_t points = H5Sget_simple_extent_npoints(space);
         const std::size_t width = H5Tget_size(type);
         if (points < 0 || width == 0 ||
@@ -717,7 +696,9 @@ void writeResult(const State &state) {
     json sorted = json::object();
     std::vector<std::string> keys;
     for (const auto &[key, value] : translations.items()) {
-        if (value.is_string() && validSource(key))
+        // 只要求已有词条本身是字符串：不按 validSource 再次过滤，
+        // 避免重复提取时把用户手工加入的中文键/数字键等条目静默丢掉。
+        if (value.is_string())
             keys.push_back(key);
     }
     std::sort(keys.begin(), keys.end(), [](const std::string &a,
@@ -835,15 +816,18 @@ int wmain(int argc, wchar_t **argv) {
 int main(int argc, char **argv) {
 #endif
     try {
-        if (argc != 3 || std::wstring(argv[1]) != L"--request") {
+#ifdef _WIN32
+        const bool hasRequest =
+            argc == 3 && std::wstring(argv[1]) == L"--request";
+#else
+        const bool hasRequest =
+            argc == 3 && std::string(argv[1]) == "--request";
+#endif
+        if (!hasRequest) {
             std::cerr << "usage: translator_extractor --request request.json\n";
             return 2;
         }
-#ifdef _WIN32
         return run(fs::path(argv[2]));
-#else
-        return run(fs::path(argv[2]));
-#endif
     } catch (const std::exception &error) {
         emit({{"type", "fatal"}, {"message", error.what()}});
         return 1;

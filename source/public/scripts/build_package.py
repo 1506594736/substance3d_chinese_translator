@@ -91,7 +91,16 @@ def _validate_sources() -> None:
     # Painter 7.2 ships Python 3.7; Designer 15+ ships newer Python. Reject
     # newer syntax at package time even when this script itself runs on a
     # newer toolchain.
-    ast.parse(merged_text, filename=str(merged_source), feature_version=(3, 7))
+    try:
+        ast.parse(
+            merged_text,
+            filename=str(merged_source),
+            feature_version=(3, 7),
+        )
+    except TypeError:
+        # Python 3.7 本身没有 feature_version 参数；在旧解释器上退化为
+        # 普通语法检查，避免构建脚本自身无法运行。
+        ast.parse(merged_text, filename=str(merged_source))
     ast.parse(
         (SRC / "__init__.py").read_text(encoding="utf-8"),
         filename=str(SRC / "__init__.py"),

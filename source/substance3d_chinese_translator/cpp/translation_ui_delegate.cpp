@@ -66,6 +66,7 @@
 #include <intrin.h>
 
 #include <typeinfo>
+#include <vector>
 #include "extraction_rules.h"
 
 
@@ -79,6 +80,7 @@ QString g_fallbackPath;
 QString g_idTranslationPath;
 QPointer<QWidget> g_originalTooltipOwner;
 bool g_enabled = true;
+bool g_translateDesignerGraph = false;
 bool g_translateLayersPanel = true;
 bool g_fuzzyMatchEnabled = true;
 QKeySequence g_editKey = QKeySequence(QStringLiteral("Ctrl"));
@@ -891,7 +893,7 @@ QString translateMixedPortLabel(const QString &source) {
 
 QString graphPaintTranslation(QPainter *painter, const QString &source,
                               int portSide = 0) {
-    if (!g_enabled)
+    if (!g_enabled || !g_translateDesignerGraph)
         return {};
     // 混合端口标签（已部分翻译 + 残留英文，如"（主要） Preview"）需要
     // 放行到分段翻译；纯中文标签才是已翻译完成、直接跳过。
@@ -973,6 +975,12 @@ DrawXY g_drawXY = nullptr;
 DrawXYWH g_drawXYWH = nullptr;
 bool g_graphPainterHooksInstalled = false;
 QSet<QString> g_graphPaintDiagnosticKeys;
+struct GraphHookSlot {
+    void **slot = nullptr;
+    void *original = nullptr;
+    void *replacement = nullptr;
+};
+std::vector<GraphHookSlot> g_graphHookSlots;
 
 qreal transformDifference(const QTransform &a, const QTransform &b) {
     return qAbs(a.m11() - b.m11()) + qAbs(a.m12() - b.m12()) +
@@ -1203,10 +1211,13 @@ bool replaceMainModuleImport(void *original, void *replacement) {
             auto **slot = reinterpret_cast<void **>(&thunk->u1.Function);
             if (*slot != original)
                 continue;
+            g_graphHookSlots.push_back({slot, original, replacement});
             DWORD oldProtection = 0;
             if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE,
-                                &oldProtection))
+                                &oldProtection)) {
+                g_graphHookSlots.pop_back();
                 continue;
+            }
             *slot = replacement;
             DWORD ignored = 0;
             VirtualProtect(slot, sizeof(void *), oldProtection, &ignored);
@@ -1215,6 +1226,65 @@ bool replaceMainModuleImport(void *original, void *replacement) {
         }
     }
     return replaced;
+}
+
+bool uninstallGraphPainterHooks() {
+    for (std::size_t index = g_graphHookSlots.size(); index > 0; --index) {
+        const std::size_t current = index - 1;
+        const GraphHookSlot hook = g_graphHookSlots[current];
+        if (!hook.slot || *hook.slot != hook.replacement) {
+            g_graphHookSlots.erase(g_graphHookSlots.begin() + current);
+            continue;
+        }
+        DWORD oldProtection = 0;
+        if (!VirtualProtect(hook.slot, sizeof(void *), PAGE_READWRITE,
+                            &oldProtection))
+            continue;
+        *hook.slot = hook.original;
+        DWORD ignored = 0;
+        VirtualProtect(hook.slot, sizeof(void *), oldProtection, &ignored);
+        FlushInstructionCache(GetCurrentProcess(), hook.slot, sizeof(void *));
+        g_graphHookSlots.erase(g_graphHookSlots.begin() + current);
+    }
+    g_graphPainterHooksInstalled = !g_graphHookSlots.empty();
+    return !g_graphPainterHooksInstalled;
+}
+
+int designerExecutableMajorVersion() {
+    wchar_t executable[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, executable, MAX_PATH))
+        return 0;
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(executable, &ignored);
+    if (!size)
+        return 0;
+    std::vector<unsigned char> data(size);
+    if (!GetFileVersionInfoW(executable, 0, size, data.data()))
+        return 0;
+    VS_FIXEDFILEINFO *info = nullptr;
+    UINT infoSize = 0;
+    if (!VerQueryValueW(data.data(), L"\\",
+                        reinterpret_cast<void **>(&info), &infoSize) ||
+        !info || infoSize < sizeof(VS_FIXEDFILEINFO) ||
+        info->dwSignature != 0xfeef04bd)
+        return 0;
+    return HIWORD(info->dwFileVersionMS);
+}
+
+bool graphHookEnvironmentCompatible() {
+    if (!isDesignerHost() || sizeof(void *) != 8)
+        return false;
+    const QStringList qtParts = QString::fromLatin1(qVersion()).split(u'.');
+    if (qtParts.size() < 2)
+        return false;
+    bool majorOk = false;
+    bool minorOk = false;
+    const int qtMajor = qtParts.at(0).toInt(&majorOk);
+    const int qtMinor = qtParts.at(1).toInt(&minorOk);
+    if (!majorOk || !minorOk || qtMajor != 6 || qtMinor < 5 || qtMinor > 9)
+        return false;
+    const int designerMajor = designerExecutableMajorVersion();
+    return designerMajor == 15 || designerMajor == 16;
 }
 
 template <typename Function>
@@ -1228,6 +1298,8 @@ bool hookQtGuiImport(HMODULE qtGui, const char *symbol, Function hook,
 bool installGraphPainterHooks() {
     if (g_graphPainterHooksInstalled)
         return true;
+    if (!graphHookEnvironmentCompatible())
+        return false;
     HMODULE qtGui = GetModuleHandleW(L"Qt6Gui.dll");
     if (!qtGui)
         return false;
@@ -1253,6 +1325,10 @@ bool installGraphPainterHooks() {
         qtGui,
         "?drawText@QPainter@@QEAAXHHHHHAEBVQString@@PEAVQRect@@@Z",
         &hookedDrawXYWH, g_drawXYWH);
+    if (!installed || g_graphHookSlots.empty()) {
+        uninstallGraphPainterHooks();
+        return false;
+    }
     g_graphPainterHooksInstalled = installed;
     return installed;
 }
@@ -2588,11 +2664,11 @@ bool pinThisDll() {
 }
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 10; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 11; }
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
     // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
-    return L"20260810-1750-shortcut-physical-debounce100";
+    return L"20260811-graph-hook-opt-in-safe-rollback";
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
@@ -2744,13 +2820,54 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_translation(
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enabled) {
     g_enabled = enabled != 0;
     if (g_enabled) {
+        if (g_translateDesignerGraph) {
+            try {
+                if (!installGraphPainterHooks())
+                    g_translateDesignerGraph = false;
+            } catch (...) {
+                g_translateDesignerGraph = false;
+                uninstallGraphPainterHooks();
+            }
+        }
         scanVisibleWidgets();
     } else {
         // Disabling the plug-in must immediately restore every widget that
         // was translated by this delegate back to its original text.
         restoreAllTranslatedWidgets();
+        uninstallGraphPainterHooks();
     }
     refreshGraphViews();
+}
+
+extern "C" __declspec(dllexport) int __cdecl
+sp_delegate_set_translate_designer_graph(int enabled) {
+    if (!enabled) {
+        g_translateDesignerGraph = false;
+        const bool restored = uninstallGraphPainterHooks();
+        refreshGraphViews();
+        return restored ? 1 : 0;
+    }
+    if (!graphHookEnvironmentCompatible()) {
+        g_translateDesignerGraph = false;
+        uninstallGraphPainterHooks();
+        return 0;
+    }
+    if (g_enabled) {
+        try {
+            if (!installGraphPainterHooks()) {
+                g_translateDesignerGraph = false;
+                uninstallGraphPainterHooks();
+                return 0;
+            }
+        } catch (...) {
+            g_translateDesignerGraph = false;
+            uninstallGraphPainterHooks();
+            return 0;
+        }
+    }
+    g_translateDesignerGraph = true;
+    refreshGraphViews();
+    return 1;
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translation(
@@ -2798,10 +2915,9 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
     // public text child to edit. Patch only the host's imported QPainter
     // drawText calls and substitute exact, currently visible node titles.
     // Geometry, font, clipping and z-order therefore remain entirely native.
-    // The hook is installed only when the host is Designer; in Painter the
-    // universal Qt6 delegate runs without patching any Qt painting calls.
-    if (isDesignerHost())
-        installGraphPainterHooks();
+    // Graph painting hooks are opt-in and are installed only through
+    // sp_delegate_set_translate_designer_graph(). Merely loading the plug-in
+    // never patches the host executable's import table.
 
     // Do not install a QTranslator: translators receive the original English
     // source before Painter's own translator and could therefore override an

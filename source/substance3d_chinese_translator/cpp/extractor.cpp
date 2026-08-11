@@ -32,12 +32,14 @@ using json = nlohmann::json;
 namespace {
 using namespace extraction_rules;
 constexpr std::size_t kMaxArchiveMembers = 50000;
+constexpr std::size_t kMaxTaskExtractedMembers = 100000;
 constexpr std::size_t kMaxNestedArchives = 128;
 constexpr int kMaxNestedDepth = 3;
 constexpr std::size_t kMaxParsedFileBytes = 64 * 1024 * 1024;
 constexpr std::size_t kMaxDatasetBytes = 256 * 1024 * 1024;
 constexpr std::uint64_t kMaxArchiveMemberBytes = 512ULL * 1024 * 1024;
 constexpr std::uint64_t kMaxArchiveTotalBytes = 4ULL * 1024 * 1024 * 1024;
+constexpr std::uint64_t kMaxTaskExpandedBytes = 2ULL * 1024 * 1024 * 1024;
 
 struct Request {
     fs::path source;
@@ -55,9 +57,24 @@ struct State {
     std::set<std::string> terms;
     json failures = json::array();
     std::size_t nestedArchives = 0;
+    std::size_t extractedMembers = 0;
+    std::uint64_t expandedBytes = 0;
     std::size_t processed = 0;
     std::size_t total = 0;
 };
+
+void consumeExpandedBytes(State &state, std::uint64_t bytes) {
+    if (bytes > kMaxTaskExpandedBytes - state.expandedBytes)
+        throw std::runtime_error(
+            "extraction task exceeds the cumulative size limit");
+    state.expandedBytes += bytes;
+}
+
+void consumeExtractedMember(State &state) {
+    if (++state.extractedMembers > kMaxTaskExtractedMembers)
+        throw std::runtime_error(
+            "extraction task contains too many expanded members");
+}
 
 std::string pathUtf8(const fs::path &path) {
 #ifdef _WIN32
@@ -393,7 +410,8 @@ bool archiveFormat(const fs::path &path) {
     return result == ARCHIVE_OK;
 }
 
-void extractArchive(const fs::path &source, const fs::path &destination) {
+void extractArchive(State &state, const fs::path &source,
+                    const fs::path &destination) {
     archive *reader = archive_read_new();
     archive_read_support_filter_all(reader);
     archive_read_support_format_all(reader);
@@ -411,6 +429,12 @@ void extractArchive(const fs::path &source, const fs::path &destination) {
         if (++members > kMaxArchiveMembers) {
             archive_read_free(reader);
             throw std::runtime_error("archive contains more than 50000 entries");
+        }
+        try {
+            consumeExtractedMember(state);
+        } catch (...) {
+            archive_read_free(reader);
+            throw;
         }
         memberBytes = 0;
         const wchar_t *wideName = archive_entry_pathname_w(entry);
@@ -462,6 +486,12 @@ void extractArchive(const fs::path &source, const fs::path &destination) {
                 throw std::runtime_error(
                     "archive extraction exceeds the total size limit");
             }
+            try {
+                consumeExpandedBytes(state, size);
+            } catch (...) {
+                archive_read_free(reader);
+                throw;
+            }
             file.seekp(offset);
             file.write(static_cast<const char *>(buffer),
                        static_cast<std::streamsize>(size));
@@ -479,12 +509,19 @@ void extractArchive(const fs::path &source, const fs::path &destination) {
     archive_read_free(reader);
 }
 
+struct HdfContext {
+    fs::path destination;
+    State *state = nullptr;
+    std::exception_ptr error;
+};
+
 herr_t hdfVisitor(hid_t object, const char *name, const H5O_info2_t *info,
                   void *operatorData) {
     if (info->type != H5O_TYPE_DATASET)
         return 0;
-    auto *context = static_cast<std::pair<fs::path, std::exception_ptr> *>(operatorData);
+    auto *context = static_cast<HdfContext *>(operatorData);
     try {
+        consumeExtractedMember(*context->state);
         const fs::path relative = pathFromUtf8(name);
         if (!safeRelative(relative))
             throw std::runtime_error("unsafe HDF5 dataset path");
@@ -515,6 +552,13 @@ herr_t hdfVisitor(hid_t object, const char *name, const H5O_info2_t *info,
             H5Sclose(space); H5Tclose(type); H5Dclose(dataset);
             throw std::runtime_error("HDF5 dataset exceeds the size limit");
         }
+        if (datasetBytes >
+                kMaxTaskExpandedBytes - context->state->expandedBytes) {
+            H5Sclose(space); H5Tclose(type); H5Dclose(dataset);
+            throw std::runtime_error(
+                "extraction task exceeds the cumulative size limit");
+        }
+        context->state->expandedBytes += datasetBytes;
         std::vector<unsigned char> data(datasetBytes);
         if (!data.empty() && H5Dread(dataset, type, H5S_ALL, H5S_ALL,
                                     H5P_DEFAULT, data.data()) < 0) {
@@ -522,28 +566,29 @@ herr_t hdfVisitor(hid_t object, const char *name, const H5O_info2_t *info,
             throw std::runtime_error("cannot read HDF5 dataset");
         }
         H5Sclose(space); H5Tclose(type); H5Dclose(dataset);
-        const fs::path output = context->first / relative;
+        const fs::path output = context->destination / relative;
         fs::create_directories(output.parent_path());
         std::ofstream file(output, std::ios::binary | std::ios::trunc);
         file.write(reinterpret_cast<const char *>(data.data()),
                    static_cast<std::streamsize>(data.size()));
     } catch (...) {
-        context->second = std::current_exception();
+        context->error = std::current_exception();
         return -1;
     }
     return 0;
 }
 
-void extractHdf5(const fs::path &source, const fs::path &destination) {
+void extractHdf5(State &state, const fs::path &source,
+                 const fs::path &destination) {
     const hid_t file = H5Fopen(pathUtf8(source).c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file < 0)
         throw std::runtime_error("cannot open HDF5 container");
-    std::pair<fs::path, std::exception_ptr> context{destination, nullptr};
+    HdfContext context{destination, &state, nullptr};
     const herr_t result = H5Ovisit3(file, H5_INDEX_NAME, H5_ITER_NATIVE,
                                     hdfVisitor, &context, H5O_INFO_BASIC);
     H5Fclose(file);
-    if (context.second)
-        std::rethrow_exception(context.second);
+    if (context.error)
+        std::rethrow_exception(context.error);
     if (result < 0)
         throw std::runtime_error("HDF5 traversal failed");
 }
@@ -560,12 +605,13 @@ bool isContainer(const fs::path &path) {
     }
 }
 
-void extractContainer(const fs::path &source, const fs::path &destination) {
+void extractContainer(State &state, const fs::path &source,
+                      const fs::path &destination) {
     fs::create_directories(destination);
     if (isHdf5(source))
-        extractHdf5(source, destination);
+        extractHdf5(state, source, destination);
     else
-        extractArchive(source, destination);
+        extractArchive(state, source, destination);
 }
 
 void scanExtracted(State &state, const fs::path &root, int depth) {
@@ -607,7 +653,7 @@ void scanExtracted(State &state, const fs::path &root, int depth) {
         const fs::path destination = root /
             ("_nested_" + std::to_string(++state.nestedArchives));
         try {
-            extractContainer(path, destination);
+            extractContainer(state, path, destination);
             scanExtracted(state, destination, depth + 1);
         } catch (const std::exception &error) {
             state.failures.push_back({{"file", pathUtf8(path)},
@@ -638,7 +684,7 @@ void processAsset(State &state, const fs::path &asset) {
              std::to_string(std::chrono::high_resolution_clock::now()
                                 .time_since_epoch().count()));
         try {
-            extractContainer(asset, temporary);
+            extractContainer(state, asset, temporary);
             scanExtracted(state, temporary, 1);
             fs::remove_all(temporary);
         } catch (...) {

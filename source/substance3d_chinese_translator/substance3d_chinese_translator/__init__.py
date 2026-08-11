@@ -9,6 +9,7 @@ PySide2 / Qt5 C++ 显示引擎；Designer 固定使用 Qt6 显示引擎。
 """
 
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import shutil
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -440,6 +442,7 @@ IS_TRANSLATION_ENABLED = True
 TRANSLATE_LAYERS_PANEL = True
 FUZZY_MATCH_ENABLED = True
 FALLBACK_SCAN_ENABLED = False
+TRANSLATE_DESIGNER_GRAPH = False
 ENABLE_SHORTCUT_DEFAULT = "F10"
 ENABLE_SHORTCUT = ENABLE_SHORTCUT_DEFAULT
 EDIT_TRIGGER = EditTrigger()
@@ -464,6 +467,20 @@ PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
 )
 PLUGIN_ASSET_NAME = "substance3d_chinese_translator.zip"
+MAX_UPDATE_DOWNLOAD_BYTES = 64 * 1024 * 1024
+MAX_UPDATE_FILES = 256
+MAX_UPDATE_FILE_BYTES = 32 * 1024 * 1024
+MAX_UPDATE_EXPANDED_BYTES = 96 * 1024 * 1024
+MAX_UPDATE_COMPRESSION_RATIO = 250
+REQUIRED_UPDATE_FILES = {
+    "__init__.py",
+    "pluginInfo.json",
+    "substance3d_chinese_translator/__init__.py",
+    "native/translator_delegate_qt5.dll",
+    "native/translator_delegate_qt6.dll",
+    "native/translator_extractor.exe",
+    "translations/official_assets_zh.json",
+}
 
 # Designer 没有图层面板，图层面板翻译开关仅对 Painter 生效。
 if HOST == "designer":
@@ -497,6 +514,7 @@ def _load_saved_settings():
     """从 QSettings 恢复全部用户设置，Painter 与 Designer 共用同一份代码。"""
     global IS_TRANSLATION_ENABLED, TRANSLATE_LAYERS_PANEL
     global FUZZY_MATCH_ENABLED, FALLBACK_SCAN_ENABLED
+    global TRANSLATE_DESIGNER_GRAPH
     global ENABLE_SHORTCUT
     IS_TRANSLATION_ENABLED = _read_bool_setting(
         "substance3d_chinese_translator/enabled", True
@@ -510,6 +528,11 @@ def _load_saved_settings():
     )
     FALLBACK_SCAN_ENABLED = _read_bool_setting(
         "substance3d_chinese_translator/fallback_scan", False
+    )
+    TRANSLATE_DESIGNER_GRAPH = (
+        HOST == "designer" and _read_bool_setting(
+            "substance3d_chinese_translator/translate_designer_graph", False
+        )
     )
     ENABLE_SHORTCUT = str(
         QtCore.QSettings().value(
@@ -694,13 +717,15 @@ def _load_native_delegate():
         dll.sp_delegate_show_edit_at_cursor.restype = None
         dll.sp_delegate_set_translate_layers.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_translate_layers.restype = None
+        dll.sp_delegate_set_translate_designer_graph.argtypes = [ctypes.c_int]
+        dll.sp_delegate_set_translate_designer_graph.restype = ctypes.c_int
         dll.sp_delegate_install.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install.restype = ctypes.c_int
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
         api_version = dll.sp_delegate_api_version()
-        if api_version != 10:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 10，实际 {api_version}")
+        if api_version != 11:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 11，实际 {api_version}")
             return None
         dll.sp_delegate_build_id.restype = ctypes.c_wchar_p
         dll.sp_delegate_build_id.argtypes = []
@@ -730,6 +755,11 @@ def _sync_native_dictionary():
     if dll is None:
         return False
     try:
+        if HOST == "designer":
+            # A pinned DLL can survive a Python plug-in reload. Always start
+            # from an unhooked state; the saved opt-in is applied only after
+            # the UI engine has installed successfully.
+            dll.sp_delegate_set_translate_designer_graph(0)
         dll.sp_delegate_clear_translations()
         dll.sp_delegate_set_fallback_path(
             os.path.join(TRANSLATIONS_DIR, "user_added_zh.json")
@@ -745,23 +775,14 @@ def _sync_native_dictionary():
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
                 dll.sp_delegate_add_translation(source, target)
-                source_path = TRANSLATE_SOURCE_FILES.get(source)
-                if source_path:
-                    dll.sp_delegate_set_translation_path(source, source_path)
         for control_type, entries in CONTROL_TRANSLATE_DICTS.items():
             for source, target in entries.items():
                 dll.sp_delegate_add_control_translation(
                     control_type, source, target
                 )
-                source_path = TRANSLATE_SOURCE_FILES.get(source)
-                if source_path:
-                    dll.sp_delegate_set_translation_path(source, source_path)
         for id_string, target in ID_TRANSLATE_DICTS.items():
             if isinstance(id_string, str) and isinstance(target, str):
                 dll.sp_delegate_add_id_translation(id_string, target)
-                source_path = TRANSLATE_SOURCE_FILES.get(id_string)
-                if source_path:
-                    dll.sp_delegate_set_translation_path(id_string, source_path)
         dll.sp_delegate_set_enabled(int(IS_TRANSLATION_ENABLED))
         return True
     except Exception as exc:
@@ -951,6 +972,25 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             _set_translation_enabled
         )
         translation_layout.addWidget(self.translation_enabled_check)
+
+        if HOST == "designer":
+            self.graph_translation_check = QtWidgets.QCheckBox(
+                "启用节点图翻译（实验性，默认关闭）",
+                translation_group,
+            )
+            self.graph_translation_check.setChecked(
+                TRANSLATE_DESIGNER_GRAPH
+            )
+            self.graph_translation_check.setToolTip(
+                "节点标题和端口由 Designer 私有绘制代码生成。"
+                "启用后仅在通过 Designer/Qt 兼容白名单时，"
+                "临时挂钩必要的 QPainter 文字绘制入口。"
+                "关闭后立即回滚挂钩，不修改项目数据。"
+            )
+            self.graph_translation_check.toggled.connect(
+                _set_designer_graph_translation
+            )
+            translation_layout.addWidget(self.graph_translation_check)
 
         if HOST == "painter":
             self.layers_translation_check = QtWidgets.QCheckBox(
@@ -1201,6 +1241,9 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         if (hasattr(self, "layers_translation_check")
                 and is_safe(self.layers_translation_check)):
             self.layers_translation_check.setEnabled(master_on)
+        if (hasattr(self, "graph_translation_check")
+                and is_safe(self.graph_translation_check)):
+            self.graph_translation_check.setEnabled(master_on)
 
     def _apply_enable_shortcut(self, value):
         global ENABLE_SHORTCUT
@@ -1848,6 +1891,86 @@ def _set_layers_panel_translation(enabled):
     )
 
 
+def _sync_designer_graph_translation():
+    """将节点图翻译设置推送到原生引擎，返回是否已安全应用。"""
+    if HOST != "designer":
+        return False
+    dll = _load_native_delegate()
+    if dll is None:
+        return False
+    try:
+        result = dll.sp_delegate_set_translate_designer_graph(
+            int(TRANSLATE_DESIGNER_GRAPH)
+        )
+        if TRANSLATE_DESIGNER_GRAPH and result != 1:
+            print(
+                ">>> 节点图翻译未启用：Designer/Qt 版本不在"
+                "兼容白名单内，或原生挂钩安装校验失败。"
+            )
+            return False
+        if not TRANSLATE_DESIGNER_GRAPH and result != 1:
+            print(">>> 警告：节点图挂钩未能全部恢复，已切换为纯转发。")
+        return True
+    except Exception as exc:
+        print(">>> 切换节点图翻译失败:", exc)
+        return False
+
+
+def _set_designer_graph_translation(enabled):
+    """只在用户明确确认后启用 Designer 节点绘制挂钩。"""
+    global TRANSLATE_DESIGNER_GRAPH
+    enabled = bool(enabled)
+    dialog = (
+        _label_extractor_dialog
+        if is_safe(_label_extractor_dialog) else None
+    )
+    checkbox = (
+        getattr(dialog, "graph_translation_check", None)
+        if dialog is not None else None
+    )
+    if enabled and not TRANSLATE_DESIGNER_GRAPH:
+        result = QtWidgets.QMessageBox.warning(
+            dialog or _get_main_window(),
+            "启用实验性节点图翻译",
+            "节点图翻译需要临时修改 Designer 主程序的 Qt "
+            "绘制导入表。\n\n"
+            "插件会先检查 Designer 15/16、Qt 6.5–6.9 和 64 位"
+            "运行环境；关闭开关或卸载时会立即回滚。\n\n"
+            "仍要启用吗？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if result != QtWidgets.QMessageBox.Yes:
+            if is_safe(checkbox):
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+            return
+    TRANSLATE_DESIGNER_GRAPH = enabled
+    QtCore.QSettings().setValue(
+        "substance3d_chinese_translator/translate_designer_graph",
+        TRANSLATE_DESIGNER_GRAPH,
+    )
+    if _sync_designer_graph_translation():
+        return
+    if enabled:
+        TRANSLATE_DESIGNER_GRAPH = False
+        QtCore.QSettings().setValue(
+            "substance3d_chinese_translator/translate_designer_graph", False
+        )
+        if is_safe(checkbox):
+            checkbox.blockSignals(True)
+            checkbox.setChecked(False)
+            checkbox.blockSignals(False)
+        QtWidgets.QMessageBox.warning(
+            dialog or _get_main_window(),
+            "节点图翻译未启用",
+            "当前 Designer/Qt 版本未通过兼容白名单，"
+            "或挂钩安装校验失败。\n"
+            "普通界面翻译不受影响。",
+        )
+
+
 def _set_fuzzy_match(enabled):
     """Toggle the fuzzy fallback of the C++ translation engine.
 
@@ -1958,6 +2081,10 @@ def _set_translation_enabled(enabled):
         "sp_delegate_set_enabled", int(IS_TRANSLATION_ENABLED),
         label="切换插件翻译总开关",
     )
+    if (HOST == "designer" and IS_TRANSLATION_ENABLED
+            and TRANSLATE_DESIGNER_GRAPH
+            and not _sync_designer_graph_translation()):
+        _set_designer_graph_translation(False)
     if _enabled_action is not None:
         try:
             if _enabled_action.isChecked() != IS_TRANSLATION_ENABLED:
@@ -2006,9 +2133,11 @@ def _latest_release_info_api():
         raise RuntimeError("GitHub 返回的发布信息缺少版本号。")
     version = tag.lstrip("vV")
     download_url = ""
+    digest = ""
     for asset in data.get("assets") or []:
         if asset.get("name") == PLUGIN_ASSET_NAME:
             download_url = asset.get("browser_download_url") or ""
+            digest = asset.get("digest") or ""
             break
     if not download_url:
         # Accept versioned names such as
@@ -2020,6 +2149,7 @@ def _latest_release_info_api():
                 "substance3d_chinese_translator"
             ) and lowered.endswith(".zip"):
                 download_url = asset.get("browser_download_url") or ""
+                digest = asset.get("digest") or ""
                 break
     if not download_url:
         raise RuntimeError(
@@ -2027,52 +2157,22 @@ def _latest_release_info_api():
             "（支持 substance3d_chinese_translator.zip 或 "
             "substance3d_chinese_translator_版本.zip）。"
         )
+    if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+        raise RuntimeError(
+            "GitHub 发布信息缺少可验证的 SHA-256 摘要，"
+            "为避免安装未经校验的更新，已中止。"
+        )
     notes = data.get("body") or ""
-    return version, download_url, notes
-
-
-def _latest_release_info_via_redirect():
-    """绕过 GitHub API 限流：跟随 releases/latest 重定向，从标签构造下载地址。
-
-    网页版 releases/latest 不经过 api.github.com，不受未认证 60 次/小时限制。
-    最终地址形如 https://github.com/owner/repo/releases/tag/v1.0.0，
-    资产下载地址按 GitHub 固定规则构造。
-    """
-    try:
-        request = urllib.request.Request(
-            f"https://github.com/{PLUGIN_REPO}/releases/latest",
-            headers={
-                "User-Agent": "substance3d_chinese_translator-updater"
-            },
-        )
-        with urllib.request.urlopen(request, timeout=15) as response:
-            final_url = response.geturl()
-        marker = "/releases/tag/"
-        index = final_url.rfind(marker)
-        if index < 0:
-            return None
-        tag = final_url[index + len(marker):].split("?")[0].strip()
-        if not tag:
-            return None
-        version = tag.lstrip("vV")
-        download_url = (
-            f"https://github.com/{PLUGIN_REPO}/releases/download/"
-            f"{tag}/{PLUGIN_ASSET_NAME}"
-        )
-        return version, download_url, ""
-    except Exception:
-        return None
+    return version, download_url, notes, digest.split(":", 1)[1].lower()
 
 
 def _latest_release_info():
-    """获取最新正式版信息；API 被限流时自动回退到网页重定向。"""
-    try:
-        return _latest_release_info_api()
-    except Exception as api_error:
-        fallback = _latest_release_info_via_redirect()
-        if fallback is not None:
-            return fallback
-        raise api_error
+    """获取最新正式版及 GitHub 生成的资产摘要。
+
+    不再回退到网页重定向，因为该路径不提供可供客户端
+    校验的发布资产摘要。
+    """
+    return _latest_release_info_api()
 
 
 class _DownloadCancelled(Exception):
@@ -2117,8 +2217,9 @@ class _DownloadProgressDialog(QtWidgets.QDialog):
         self._label.setText("正在取消…")
 
     def reject(self):
-        self._cancelled = True
-        super().reject()
+        # Closing the window requests cancellation but keeps the modal loop
+        # alive until the worker has actually released its output file.
+        self._request_cancel()
 
     def set_progress(self, downloaded, total):
         if total > 0:
@@ -2141,21 +2242,99 @@ class _DownloadProgressDialog(QtWidgets.QDialog):
         return self._cancelled
 
 
-def _download_update(url, destination, progress=None, is_cancelled=None):
+def _normalized_zip_name(info):
+    """Return a safe, normalized archive member name or raise."""
+    raw_name = info.filename.replace("\\", "/")
+    parts = [part for part in raw_name.split("/") if part not in ("", ".")]
+    unsafe = (
+        not parts
+        or raw_name.startswith("/")
+        or any(part == ".." for part in parts)
+        or (len(raw_name) >= 2 and raw_name[1] == ":")
+        or ((info.external_attr >> 16) & 0o170000) == 0o120000
+    )
+    if unsafe:
+        raise RuntimeError(f"更新包包含不安全路径或链接: {info.filename}")
+    return "/".join(parts)
+
+
+def _validate_update_archive(path, expected_version=None):
+    """Validate package structure and bounded extraction cost."""
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        if len(infos) > MAX_UPDATE_FILES:
+            raise RuntimeError("更新包文件数超过安全上限。")
+        names = set()
+        folded_names = set()
+        expanded = 0
+        for info in infos:
+            name = _normalized_zip_name(info)
+            folded = name.casefold()
+            if folded in folded_names:
+                raise RuntimeError(f"更新包含重复路径: {name}")
+            folded_names.add(folded)
+            names.add(name)
+            if info.is_dir():
+                continue
+            if info.flag_bits & 0x1:
+                raise RuntimeError(f"更新包含加密文件: {name}")
+            if info.file_size > MAX_UPDATE_FILE_BYTES:
+                raise RuntimeError(f"更新包单个文件过大: {name}")
+            expanded += info.file_size
+            if expanded > MAX_UPDATE_EXPANDED_BYTES:
+                raise RuntimeError("更新包解压总大小超过安全上限。")
+            if (info.file_size > 1024 * 1024
+                    and info.file_size >
+                    max(1, info.compress_size) * MAX_UPDATE_COMPRESSION_RATIO):
+                raise RuntimeError(f"更新包文件压缩比异常: {name}")
+        missing = REQUIRED_UPDATE_FILES.difference(names)
+        if missing:
+            raise RuntimeError(
+                f"下载的发布包缺少必要文件: {sorted(missing)}"
+            )
+        try:
+            metadata = json.loads(archive.read("pluginInfo.json").decode("utf-8-sig"))
+        except Exception as exc:
+            raise RuntimeError(f"更新包 pluginInfo.json 无效: {exc}")
+        if metadata.get("name") != "substance3d_chinese_translator":
+            raise RuntimeError("更新包插件标识不匹配。")
+        packaged_version = str(metadata.get("version") or "").lstrip("vV")
+        if expected_version and packaged_version != str(expected_version).lstrip("vV"):
+            raise RuntimeError(
+                f"更新包版本 {packaged_version!r} 与发布版本 "
+                f"{expected_version!r} 不一致。"
+            )
+        bad_member = archive.testzip()
+        if bad_member:
+            raise RuntimeError(f"更新包校验失败: {bad_member}")
+
+
+def _download_update(url, destination, expected_sha256, expected_version,
+                     progress=None, is_cancelled=None):
     """Download the release ZIP and verify it is a complete plug-in package.
 
     ``progress(downloaded_bytes, total_bytes)`` is invoked as data arrives;
     ``is_cancelled()`` is polled between chunks and may raise a
     ``_DownloadCancelled`` error through the download loop.
     """
+    parsed = urllib.parse.urlparse(url)
+    expected_prefix = f"/{PLUGIN_REPO}/releases/download/"
+    if (parsed.scheme != "https" or parsed.hostname != "github.com"
+            or not parsed.path.startswith(expected_prefix)):
+        raise RuntimeError("更新下载地址不是预期的 GitHub Release 资产。")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
+        raise RuntimeError("更新包缺少有效的 SHA-256 摘要。")
     request = urllib.request.Request(
         url, headers={"User-Agent": "substance3d_chinese_translator-updater"}
     )
-    with urllib.request.urlopen(request, timeout=180) as response:
+    digest = hashlib.sha256()
+    with urllib.request.urlopen(request, timeout=15) as response:
         try:
             total_bytes = int(response.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
             total_bytes = 0
+        if total_bytes > MAX_UPDATE_DOWNLOAD_BYTES:
+            raise RuntimeError("更新包大小超过安全上限。")
         with open(destination, "wb") as stream:
             downloaded = 0
             while True:
@@ -2165,20 +2344,16 @@ def _download_update(url, destination, progress=None, is_cancelled=None):
                 if not chunk:
                     break
                 stream.write(chunk)
+                digest.update(chunk)
                 downloaded += len(chunk)
+                if downloaded > MAX_UPDATE_DOWNLOAD_BYTES:
+                    raise RuntimeError("更新包大小超过安全上限。")
                 if progress is not None:
                     progress(downloaded, total_bytes)
-    with zipfile.ZipFile(destination) as archive:
-        names = set(archive.namelist())
-        required = {
-            "__init__.py",
-            "translations/official_assets_zh.json",
-        }
-        missing = required.difference(names)
-        if missing:
-            raise RuntimeError(
-                f"下载的发布包缺少必要文件: {sorted(missing)}"
-            )
+    actual_sha256 = digest.hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError("更新包 SHA-256 校验失败，已拒绝安装。")
+    _validate_update_archive(destination, expected_version)
     return destination
 
 
@@ -2203,7 +2378,9 @@ def _check_updates(parent=None):
     try:
         QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
         try:
-            version, download_url, notes = _latest_release_info()
+            version, download_url, notes, expected_sha256 = (
+                _latest_release_info()
+            )
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         if _version_tuple(version) <= _version_tuple(PLUGIN_VERSION):
@@ -2231,10 +2408,12 @@ def _check_updates(parent=None):
         if result != QtWidgets.QMessageBox.Yes:
             return
 
-        destination = os.path.join(
-            os.path.dirname(PLUGIN_DIR),
-            f"substance3d_chinese_translator_{version}.zip",
+        descriptor, destination = tempfile.mkstemp(
+            prefix="substance3d_chinese_translator_update_",
+            suffix=".zip",
+            dir=os.path.dirname(PLUGIN_DIR),
         )
+        os.close(descriptor)
         progress_dialog = _DownloadProgressDialog(parent)
         cancel_event = threading.Event()
         state = {"downloaded": 0, "total": 0, "done": False, "error": None}
@@ -2244,6 +2423,8 @@ def _check_updates(parent=None):
                 _download_update(
                     download_url,
                     destination,
+                    expected_sha256,
+                    version,
                     lambda downloaded, total: state.update(
                         downloaded=downloaded, total=total
                     ),
@@ -2251,11 +2432,11 @@ def _check_updates(parent=None):
                 )
                 state["done"] = True
             except _DownloadCancelled:
-                state["done"] = True
                 state["error"] = "cancelled"
-            except Exception as exc:
                 state["done"] = True
+            except Exception as exc:
                 state["error"] = str(exc)
+                state["done"] = True
 
         def _on_cancel():
             cancel_event.set()
@@ -2266,12 +2447,14 @@ def _check_updates(parent=None):
         worker.start()
 
         def _tick():
-            if cancel_event.is_set() or progress_dialog.is_cancelled():
-                progress_dialog.reject()
-                return
             if state["done"]:
-                progress_dialog.set_finished()
+                if not progress_dialog.is_cancelled():
+                    progress_dialog.set_finished()
                 progress_dialog.accept()
+                return
+            if cancel_event.is_set() or progress_dialog.is_cancelled():
+                cancel_event.set()
+                QtCore.QTimer.singleShot(100, _tick)
                 return
             progress_dialog.set_progress(
                 state["downloaded"], state["total"]
@@ -2289,15 +2472,19 @@ def _check_updates(parent=None):
         )
         if cancelled:
             cancel_event.set()
-            worker.join(timeout=5)
+            worker.join()
             try:
                 os.remove(destination)
             except OSError:
                 pass
             return
-        worker.join(timeout=5)
+        worker.join()
         error = state.get("error")
         if error:
+            try:
+                os.remove(destination)
+            except OSError:
+                pass
             raise RuntimeError(error)
         # Apply the package in place without closing the host application,
         # then ask the user to restart so the new files (and native DLL)
@@ -2377,6 +2564,46 @@ def _cleanup_pending_native_files():
         pass
 
 
+def _merge_preserved_translation(old_path, new_path):
+    """Merge locally saved translations over a newly shipped dictionary."""
+    with open(old_path, "r", encoding="utf-8-sig") as stream:
+        old_payload = json.load(stream)
+    with open(new_path, "r", encoding="utf-8-sig") as stream:
+        new_payload = json.load(stream)
+    for payload in (old_payload, new_payload):
+        if (not isinstance(payload, dict)
+                or payload.get("$schema") != "sp-translation-v1"
+                or payload.get("language") != "zh-CN"):
+            raise ValueError("词库格式或语言无效")
+    old_entries = old_payload.get("translations", {})
+    new_entries = new_payload.get("translations", {})
+    if not isinstance(old_entries, dict) or not isinstance(new_entries, dict):
+        raise ValueError("词库 translations 必须是对象")
+    new_entries.update(old_entries)
+    new_payload["translations"] = new_entries
+
+    old_controls = old_payload.get("control_types", {})
+    new_controls = new_payload.get("control_types", {})
+    if not isinstance(old_controls, dict) or not isinstance(new_controls, dict):
+        raise ValueError("词库 control_types 必须是对象")
+    for control_type, old_section in old_controls.items():
+        if (not isinstance(old_section, dict)
+                or not isinstance(old_section.get("translations"), dict)):
+            raise ValueError(f"旧词库控件分区无效: {control_type}")
+        new_section = new_controls.setdefault(
+            control_type, {"translations": {}}
+        )
+        if not isinstance(new_section, dict):
+            raise ValueError(f"新词库控件分区无效: {control_type}")
+        new_scoped = new_section.setdefault("translations", {})
+        if not isinstance(new_scoped, dict):
+            raise ValueError(f"新词库控件词条无效: {control_type}")
+        new_scoped.update(old_section["translations"])
+    if new_controls:
+        new_payload["control_types"] = new_controls
+    _write_json_atomic(new_path, new_payload)
+
+
 def _apply_update_now(zip_path, parent=None):
     """Apply a downloaded release package in place, without closing the host.
 
@@ -2402,6 +2629,7 @@ def _apply_update_now(zip_path, parent=None):
     QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
     try:
         stage_dir = tempfile.mkdtemp(prefix="sp_update_stage_")
+        _validate_update_archive(zip_path)
         with zipfile.ZipFile(zip_path) as archive:
             # Reject path traversal and symlinks before anything is written:
             # a tampered update package must never escape the staging folder.
@@ -2422,7 +2650,21 @@ def _apply_update_now(zip_path, parent=None):
                     raise RuntimeError(
                         f"更新包包含符号链接: {info.filename}"
                     )
-            archive.extractall(stage_dir)
+            for info in archive.infolist():
+                normalized = _normalized_zip_name(info)
+                target = os.path.abspath(os.path.join(
+                    stage_dir, *normalized.split("/")
+                ))
+                if os.path.commonpath((stage_dir, target)) != stage_dir:
+                    raise RuntimeError(
+                        f"更新包成员越过了暂存目录: {info.filename}"
+                    )
+                if info.is_dir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with archive.open(info) as source, open(target, "wb") as output:
+                    shutil.copyfileobj(source, output, length=256 * 1024)
         if not os.path.isfile(os.path.join(stage_dir, "__init__.py")):
             raise RuntimeError("更新包缺少 __init__.py，已中止更新。")
 
@@ -2481,13 +2723,17 @@ def _apply_update_now(zip_path, parent=None):
             except OSError:
                 pass
 
-        # Restore user JSON files that the new package does not ship itself.
+        # Restore standalone user dictionaries and merge locally changed
+        # entries over dictionaries that are also shipped by the new release.
         new_translations = os.path.join(PLUGIN_DIR, "translations")
         os.makedirs(new_translations, exist_ok=True)
         for name in os.listdir(preserve_dir):
             target = os.path.join(new_translations, name)
-            if not os.path.isfile(target):
-                shutil.copy2(os.path.join(preserve_dir, name), target)
+            preserved = os.path.join(preserve_dir, name)
+            if os.path.isfile(target):
+                _merge_preserved_translation(preserved, target)
+            else:
+                shutil.copy2(preserved, target)
 
         if not os.path.isfile(os.path.join(PLUGIN_DIR, "__init__.py")):
             raise RuntimeError("替换后插件目录缺少 __init__.py。")
@@ -2661,6 +2907,12 @@ def show_translation_tool():
     _label_extractor_dialog.translation_enabled_check.setChecked(
         IS_TRANSLATION_ENABLED
     )
+    if (HOST == "designer"
+            and hasattr(_label_extractor_dialog, "graph_translation_check")):
+        _label_extractor_dialog.graph_translation_check.setChecked(
+            TRANSLATE_DESIGNER_GRAPH
+        )
+    _label_extractor_dialog._update_translation_controls()
     _label_extractor_dialog.show()
     _label_extractor_dialog.raise_()
     _label_extractor_dialog.activateWindow()
@@ -2674,6 +2926,8 @@ def _disable_native_engine():
     """停止原生翻译引擎并恢复界面原文。"""
     if _native_delegate is not None:
         try:
+            if HOST == "designer":
+                _native_delegate.sp_delegate_set_translate_designer_graph(0)
             _native_delegate.sp_delegate_set_enabled(0)
         except Exception:
             pass
@@ -2720,6 +2974,7 @@ def _teardown_engine():
 
 def _start_native_engine():
     """加载词库并启动原生引擎，返回 (词库是否OK, UI是否OK, json耗时, 同步耗时, UI耗时)。"""
+    global TRANSLATE_DESIGNER_GRAPH
     _cleanup_pending_native_files()
     phase = time.perf_counter()
     load_translation_packages()
@@ -2729,6 +2984,13 @@ def _start_native_engine():
     sync_ms = (time.perf_counter() - phase) * 1000.0
     phase = time.perf_counter()
     ui_ok = _install_native_ui(QtWidgets.QApplication.instance())
+    if HOST == "designer" and TRANSLATE_DESIGNER_GRAPH:
+        if not _sync_designer_graph_translation():
+            TRANSLATE_DESIGNER_GRAPH = False
+            QtCore.QSettings().setValue(
+                "substance3d_chinese_translator/translate_designer_graph",
+                False,
+            )
     ui_ms = (time.perf_counter() - phase) * 1000.0
     if not dictionary_ok or not ui_ok:
         print(

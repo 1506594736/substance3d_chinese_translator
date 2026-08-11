@@ -1,7 +1,0 @@
-layer panel refresh: rebuild uid=6202 channel_changed=True
-publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
-INSPECT[after_rebuild] our_panel visible=True geo=(0,10,426,0) | our_panel chain=QWidget(materialModeParams) <- QFrame(frame) <- QFrame(materialView) <- QFrame(sourcesView) <- QFrame() <- QFrame() | hint visible=False text='未发现任何属性' geo=(0,0,144,26) | hint chain=QWidget() <- QFrame(Tool) <- QWidget(qt_scrollarea_viewport) <- QScrollArea() <- QWidget() <- QDockWidget()
-layer panel refresh: rebuild uid=6228 channel_changed=False
-publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
-publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
-INSPECT[after_rebuild] our_panel visible=True geo=(0,0,472,158) | our_panel chain=QWidget() <- QFrame(Tool) <- QDockWidget(Tool) <- QMainWindow(S4MainWindow) | hint visible=False text='未发现任何属性' geo=(0,0,144,26) | hint chain=QWidget() <- QFrame(Tool) <- QWidget(qt_scrollarea_viewport) <- QScrollArea() <- QWidget() <- QDockWidget()

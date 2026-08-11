@@ -1,3 +1,0 @@
-C:/Users/liuwenbo/Desktop/sp插件/source/sp_tools/c++/build/CMakeFiles/sp_tools_delegate.dir
-C:/Users/liuwenbo/Desktop/sp插件/source/sp_tools/c++/build/CMakeFiles/ALL_BUILD.dir
-C:/Users/liuwenbo/Desktop/sp插件/source/sp_tools/c++/build/CMakeFiles/ZERO_CHECK.dir

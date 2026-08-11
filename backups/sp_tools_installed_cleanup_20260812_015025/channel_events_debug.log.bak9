@@ -1,0 +1,10 @@
+layer panel refresh: rebuild uid=6202 channel_changed=True
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+layer panel refresh: rebuild uid=6228 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+layer panel refresh: rebuild uid=6202 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+layer panel refresh: rebuild uid=6228 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']

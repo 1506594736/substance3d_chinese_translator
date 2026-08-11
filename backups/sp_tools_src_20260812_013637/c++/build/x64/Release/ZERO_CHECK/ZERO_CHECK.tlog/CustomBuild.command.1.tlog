@@ -1,0 +1,10 @@
+^C:\USERS\LIUWENBO\DESKTOP\SP插件\SOURCE\SP_TOOLS\C++\BUILD\CMAKEFILES\1C57936C94EA215E6CC41A0613CA5DA7\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/liuwenbo/Desktop/sp插件/source/sp_tools/c++ -BC:/Users/liuwenbo/Desktop/sp插件/source/sp_tools/c++/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/liuwenbo/Desktop/sp插件/source/sp_tools/c++/build/sp_tools_delegate.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

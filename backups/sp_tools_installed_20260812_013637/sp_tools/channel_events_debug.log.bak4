@@ -1,0 +1,7 @@
+EVENT TextureStateEvent action=<TextureStateEventAction.ADD: 1> channel=<ChannelType.BaseColor: 1>
+rebuild_for_channel_change: start, current=['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+rebuild_for_channel_change: pushed, native=['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+rebuild_for_channel_change: reinject done
+rebuild_for_channel_change: sync done
+EVENT TextureStateEvent action=<TextureStateEventAction.REMOVE: 3> channel=<ChannelType.BaseColor: 1>

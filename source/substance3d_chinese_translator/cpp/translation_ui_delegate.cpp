@@ -197,9 +197,10 @@ QHash<QString, QString> g_fuzzyResolved;
 QHash<QString, QString> g_translationsFolded;
 QHash<QString, QHash<QString, QString>> g_controlTranslationsFolded;
 constexpr auto kSourceProperty = "_sp_translation_source";
-constexpr auto kComboSourcesProperty = "_sp_translation_combo_sources";
-constexpr auto kTabSourcesProperty = "_sp_translation_tab_sources";
 constexpr auto kTranslatingComboProperty = "_sp_translation_combo_busy";
+// 下拉选项的原文存在每个选项自己的 itemData 里（而不是按索引的列表），
+// 模型增删/重排后各选项仍携带自己的原文，还原时不会错位。
+constexpr int kComboSourceRole = Qt::UserRole + 0x4A0;
 
 // One Qt6 delegate serves both Painter and Designer. Designer-only features
 // (graph-view painting hooks, Designer resource widgets) are always compiled
@@ -247,13 +248,6 @@ bool containsAsciiLetter(const QString &text) {
             return true;
     }
     return false;
-}
-
-void resizeStringList(QStringList &values, int size) {
-    while (values.size() < size)
-        values.append(QString());
-    while (values.size() > size)
-        values.removeLast();
 }
 
 // Normalization pipeline shared by the dictionary index and every fuzzy
@@ -329,6 +323,9 @@ QString normalizeForMatch(QString text) {
             continue;
         stripped.append(ch);
     }
+    // Identifier concatenation equivalence: drop every space so that
+    // "ScatteringColor" matches "Scattering color" (and "Color_Dodge" too).
+    stripped.remove(QLatin1Char(' '));
     return stripped.normalized(QString::NormalizationForm_C);
 }
 
@@ -514,14 +511,19 @@ bool shouldExcludeLayersPanel(QWidget *widget) {
     return !g_translateLayersPanel && isInsideLayersPanel(widget);
 }
 
+QString comboStoredSource(QComboBox *combo, int index) {
+    if (!combo || index < 0 || index >= combo->count())
+        return {};
+    const QVariant value = combo->itemData(index, kComboSourceRole);
+    return value.isValid() ? value.toString() : QString();
+}
+
 QString comboSourceAt(QComboBox *combo, int index) {
     if (!combo || index < 0 || index >= combo->count())
         return {};
-    const QStringList sources =
-        combo->property(kComboSourcesProperty).toStringList();
+    const QString stored = comboStoredSource(combo, index);
     const QString displayed = combo->itemText(index).trimmed();
-    if (index < sources.size() && !sources.at(index).isEmpty()) {
-        const QString stored = sources.at(index);
+    if (!stored.isEmpty()) {
         if (displayed == stored || g_translations.value(stored) == displayed ||
             g_originals.value(displayed) == stored)
             return stored;
@@ -1522,43 +1524,44 @@ void translateWidget(QWidget *widget) {
         if (combo->property(kTranslatingComboProperty).toBool())
             return;
         combo->setProperty(kTranslatingComboProperty, true);
-        QStringList sources = combo->property(kComboSourcesProperty).toStringList();
-        resizeStringList(sources, combo->count());
         for (int i = 0; i < combo->count(); ++i) {
             const QString source = comboSourceAt(combo, i);
             const QString result = translated(source, false,
                                               translationControlId(combo, source));
             if (!result.isNull() && combo->itemText(i) != result) {
-                sources[i] = source;
+                combo->setItemData(i, source, kComboSourceRole);
                 combo->setItemText(i, result);
             }
         }
-        combo->setProperty(kComboSourcesProperty, sources);
         if (isLayerChannelSelector(combo))
             lockLayerChannelPopupWidth(combo);
         combo->setProperty(kTranslatingComboProperty, false);
         return;
     }
     if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
-        QStringList sources = tabs->property(kTabSourcesProperty).toStringList();
-        resizeStringList(sources, tabs->count());
         for (int i = 0; i < tabs->count(); ++i) {
             const QString displayed = tabs->tabText(i).trimmed();
             QString source = displayed;
-            if (i < sources.size() && !sources.at(i).isEmpty()) {
-                const QString stored = sources.at(i);
-                if (displayed == stored || g_translations.value(stored) == displayed ||
-                    g_originals.value(displayed) == stored)
+            const QVariant storedVariant = tabs->tabData(i);
+            if (storedVariant.isValid()) {
+                const QString stored = storedVariant.toString();
+                if (!stored.isEmpty() &&
+                    (displayed == stored ||
+                     g_translations.value(stored) == displayed ||
+                     g_originals.value(displayed) == stored))
                     source = stored;
+            } else {
+                const auto original = g_originals.constFind(displayed);
+                if (original != g_originals.cend())
+                    source = original.value();
             }
             const QString result = translated(source, false,
                                               translationControlId(tabs, source));
             if (!result.isNull() && tabs->tabText(i) != result) {
-                sources[i] = source;
+                tabs->setTabData(i, source);
                 tabs->setTabText(i, result);
             }
         }
-        tabs->setProperty(kTabSourcesProperty, sources);
         return;
     }
     if (auto *dock = qobject_cast<QDockWidget *>(widget)) {
@@ -1632,14 +1635,12 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
                     return {};
                 const int row = index.row();
                 const QString displayed = index.data(Qt::DisplayRole).toString().trimmed();
-                const QStringList sources =
-                    combo->property(kComboSourcesProperty).toStringList();
-                if (row >= 0 && row < sources.size()) {
-                    const QString source = sources.at(row);
+                const QString source = comboStoredSource(combo, row);
+                if (!source.isEmpty()) {
                     const QString expected = translated(
                         source, false,
                         translationControlId(combo, source));
-                    if (!source.isEmpty() && expected == displayed)
+                    if (expected == displayed)
                         return source;
                 }
                 const auto original = g_originals.constFind(displayed);
@@ -1731,26 +1732,20 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
     }
     else if (auto *combo = qobject_cast<QComboBox *>(widget)) {
         displayed = combo->currentText();
-        const QStringList sources =
-            combo->property(kComboSourcesProperty).toStringList();
-        const int index = combo->currentIndex();
-        if (index >= 0 && index < sources.size()) {
-            const QString source = sources.at(index);
-            if (!source.isEmpty() && g_translations.value(source) == displayed)
-                return source;
-        }
+        const QString source = comboStoredSource(combo, combo->currentIndex());
+        if (!source.isEmpty() && g_translations.value(source) == displayed)
+            return source;
     }
     else if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
         const int tab = tabs->tabAt(position);
         if (tab >= 0) {
             displayed = tabs->tabText(tab);
-            const QStringList sources =
-                tabs->property(kTabSourcesProperty).toStringList();
-            if (tab < sources.size()) {
-                const QString source = sources.at(tab);
-                if (!source.isEmpty() && g_translations.value(source) == displayed)
-                    return source;
-            }
+            const QVariant storedVariant = tabs->tabData(tab);
+            const QString source = storedVariant.isValid()
+                                       ? storedVariant.toString()
+                                       : QString();
+            if (!source.isEmpty() && g_translations.value(source) == displayed)
+                return source;
         }
     }
     // A QDockWidget covers its complete panel, including large blank content
@@ -1817,6 +1812,18 @@ bool shouldSuppressTooltip(QWidget *widget) {
     return false;
 }
 
+// 宿主控件自带原生悬浮提示时不覆盖：沿父级（到窗口为止）检查 setToolTip。
+bool hasNativeTooltip(QWidget *widget) {
+    for (QWidget *current = widget; current;
+         current = current->parentWidget()) {
+        if (!current->toolTip().isEmpty())
+            return true;
+        if (current->isWindow())
+            break;
+    }
+    return false;
+}
+
 QString contextSourceAt(QWidget *widget, const QPoint &position) {
     if (!widget || shouldExcludeLayersPanel(widget))
         return {};
@@ -1840,11 +1847,9 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
                 const QString displayed =
                     index.data(Qt::DisplayRole).toString().trimmed();
                 if (QComboBox *combo = owningComboBox(view)) {
-                    const QStringList sources =
-                        combo->property(kComboSourcesProperty).toStringList();
-                    if (index.row() >= 0 && index.row() < sources.size() &&
-                        !sources.at(index.row()).isEmpty())
-                        return sources.at(index.row());
+                    const QString source = comboStoredSource(combo, index.row());
+                    if (!source.isEmpty())
+                        return source;
                     const auto original = g_originals.constFind(displayed);
                     if (original != g_originals.cend())
                         return original.value();
@@ -1880,20 +1885,20 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
         displayed = group->title();
     else if (auto *combo = qobject_cast<QComboBox *>(widget)) {
         displayed = combo->currentText();
-        const QStringList sources =
-            combo->property(kComboSourcesProperty).toStringList();
-        const int index = combo->currentIndex();
-        if (index >= 0 && index < sources.size() && !sources.at(index).isEmpty())
-            return sources.at(index);
+        const QString source = comboStoredSource(combo, combo->currentIndex());
+        if (!source.isEmpty())
+            return source;
     }
     else if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
         const int tab = tabs->tabAt(position);
         if (tab >= 0) {
             displayed = tabs->tabText(tab);
-            const QStringList sources =
-                tabs->property(kTabSourcesProperty).toStringList();
-            if (tab < sources.size() && !sources.at(tab).isEmpty())
-                return sources.at(tab);
+            const QVariant storedVariant = tabs->tabData(tab);
+            const QString source = storedVariant.isValid()
+                                       ? storedVariant.toString()
+                                       : QString();
+            if (!source.isEmpty())
+                return source;
         }
     }
     // Dock widgets span the whole panel. Their window title is not a discrete
@@ -2200,23 +2205,40 @@ void restoreTranslatedWidget(QWidget *widget) {
         return;
     }
     if (auto *combo = qobject_cast<QComboBox *>(widget)) {
-        const QStringList sources =
-            combo->property(kComboSourcesProperty).toStringList();
-        for (int i = 0; i < combo->count() && i < sources.size(); ++i) {
-            if (!sources.at(i).isEmpty())
-                combo->setItemText(i, sources.at(i));
+        for (int i = 0; i < combo->count(); ++i) {
+            const QString stored = comboStoredSource(combo, i);
+            if (stored.isEmpty())
+                continue;
+            const QString current = combo->itemText(i).trimmed();
+            if (current == stored)
+                continue;
+            const QString expected = translated(
+                stored, false, translationControlId(combo, stored));
+            if (current == expected || g_originals.value(current) == stored) {
+                combo->setItemText(i, stored);
+                combo->setItemData(i, QVariant(), kComboSourceRole);
+            }
         }
-        combo->setProperty(kComboSourcesProperty, QVariant());
         return;
     }
     if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
-        const QStringList sources =
-            tabs->property(kTabSourcesProperty).toStringList();
-        for (int i = 0; i < tabs->count() && i < sources.size(); ++i) {
-            if (!sources.at(i).isEmpty())
-                tabs->setTabText(i, sources.at(i));
+        for (int i = 0; i < tabs->count(); ++i) {
+            const QVariant storedVariant = tabs->tabData(i);
+            if (!storedVariant.isValid())
+                continue;
+            const QString stored = storedVariant.toString();
+            if (stored.isEmpty())
+                continue;
+            const QString current = tabs->tabText(i).trimmed();
+            if (current == stored)
+                continue;
+            const QString expected = translated(
+                stored, false, translationControlId(tabs, stored));
+            if (current == expected || g_originals.value(current) == stored) {
+                tabs->setTabText(i, stored);
+                tabs->setTabData(i, QVariant());
+            }
         }
-        tabs->setProperty(kTabSourcesProperty, QVariant());
         return;
     }
 
@@ -2706,7 +2728,8 @@ protected:
                 return true;
             }
             const QString source = originalTextAt(widget, help->pos());
-            if (!source.isNull()) {
+            // 宿主控件自带原生悬浮提示时不覆盖，保留宿主自己的提示。
+            if (!source.isNull() && !hasNativeTooltip(widget)) {
                 QToolTip::showText(help->globalPos(), source, widget);
                 g_originalTooltipOwner = widget;
                 event->accept();

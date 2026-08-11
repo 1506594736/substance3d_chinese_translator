@@ -461,7 +461,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "translator_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "1.3.2"
+PLUGIN_VERSION = "1.3.3"
 PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -903,6 +903,17 @@ def _is_library_tree(view):
     return False
 
 
+def _tooltip(text):
+    """悬停提示：整合成一句话，用富文本让 Qt 自动换行。"""
+    text = str(text).replace("\r\n", "\n").replace("\n", "")
+    escaped = (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    return "<p>" + escaped + "</p>"
+
+
 # ---------------------------------------------------------------
 # 资源库搜索框的中文→英文反向翻译
 # ---------------------------------------------------------------
@@ -936,15 +947,14 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             self,
         )
         credit.setOpenExternalLinks(True)
-        credit.setToolTip(
-            "打开 bilibili 作者主页 / GitHub 仓库"
-        )
         # 作者署名链接与“检查插件更新”按钮同一行，按钮右对齐。
         top_row = QtWidgets.QHBoxLayout()
         top_row.addWidget(credit, 1)
         self.update_button = QtWidgets.QPushButton("检查插件更新", self)
         self.update_button.setToolTip(
-            "从 GitHub 检查最新版本。发现新版本时可下载安装包。"
+            _tooltip(
+                "从 GitHub 检查最新版本。发现新版本时可下载安装包。"
+            )
         )
         self.update_button.clicked.connect(
             lambda: _check_updates(self)
@@ -964,9 +974,11 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         )
         self.translation_enabled_check.setChecked(IS_TRANSLATION_ENABLED)
         self.translation_enabled_check.setToolTip(
-            f"勾选时插件翻译生效，自动翻译 {HOST_DISPLAY_NAME} 的界面控件。"
-            "取消勾选时停止翻译并立即恢复所有界面原文显示。"
-            "仅影响显示，不修改项目数据。"
+            _tooltip(
+                f"勾选时插件翻译生效，自动翻译 {HOST_DISPLAY_NAME} 的界面控件。"
+                "取消勾选时停止翻译并立即恢复所有界面原文显示。"
+                "仅影响显示，不修改项目数据。"
+            )
         )
         self.translation_enabled_check.toggled.connect(
             _set_translation_enabled
@@ -982,10 +994,12 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 TRANSLATE_DESIGNER_GRAPH
             )
             self.graph_translation_check.setToolTip(
-                "节点标题和端口由 Designer 私有绘制代码生成。"
-                "启用后仅在通过 Designer/Qt 兼容白名单时，"
-                "临时挂钩必要的 QPainter 文字绘制入口。"
-                "关闭后立即回滚挂钩，不修改项目数据。"
+                _tooltip(
+                    "节点标题和端口由 Designer 私有绘制代码生成。"
+                    "启用后仅在通过 Designer/Qt 兼容白名单时，"
+                    "临时挂钩必要的 QPainter 文字绘制入口。"
+                    "关闭后立即回滚挂钩，不修改项目数据。"
+                )
             )
             self.graph_translation_check.toggled.connect(
                 _set_designer_graph_translation
@@ -999,7 +1013,10 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             )
             self.layers_translation_check.setChecked(TRANSLATE_LAYERS_PANEL)
             self.layers_translation_check.setToolTip(
-                "开启后使用图层面板专用规则翻译全部控件和图层名称。仅改变显示，不修改项目数据。"
+                _tooltip(
+                    "开启后使用图层面板专用规则翻译全部控件和图层名称。"
+                    "仅改变显示，不修改项目数据。"
+                )
             )
             self.layers_translation_check.toggled.connect(
                 _set_layers_panel_translation
@@ -1011,9 +1028,12 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         )
         self.fuzzy_match_check.setChecked(FUZZY_MATCH_ENABLED)
         self.fuzzy_match_check.setToolTip(
-            "勾选后，当词库中找不到完全相同的原文时，"
-            "会忽略大小写、全角/半角、下划线、多余空格、省略号等差异进行匹配。"
-            "词库中的精准词条始终优先。"
+            _tooltip(
+                "勾选后，当词库中找不到完全相同的原文时，"
+                "会忽略大小写、全角/半角、下划线、空格差异（多余或缺少）、"
+                "省略号等差异进行匹配。"
+                "词库中的精准词条始终优先。"
+            )
         )
         self.fuzzy_match_check.toggled.connect(_set_fuzzy_match)
         translation_layout.addWidget(self.fuzzy_match_check)
@@ -1023,8 +1043,10 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         )
         self.fallback_scan_check.setChecked(FALLBACK_SCAN_ENABLED)
         self.fallback_scan_check.setToolTip(
-            "勾选后插件每 10 秒扫描一次全部可见控件补翻译。"
-            "正常情况下界面事件已能覆盖所有翻译，一般无需开启。"
+            _tooltip(
+                "勾选后插件每 10 秒扫描一次全部可见控件补翻译。"
+                "正常情况下界面事件已能覆盖所有翻译，一般无需开启。"
+            )
         )
         self.fallback_scan_check.toggled.connect(_set_fallback_scan)
         translation_layout.addWidget(self.fallback_scan_check)
@@ -1049,7 +1071,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.enable_shortcut_button.setMinimumWidth(160)
         self.enable_shortcut_button.set_value(ENABLE_SHORTCUT)
         self.enable_shortcut_button.setToolTip(
-            "按 Esc 取消，按 Backspace 恢复默认"
+            _tooltip("按 Esc 取消，按 Backspace 恢复默认")
         )
         self.enable_shortcut_button.key_captured.connect(
             self._apply_enable_shortcut
@@ -1064,7 +1086,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.edit_popup_button.setMinimumWidth(160)
         self.edit_popup_button.set_value(EDIT_TRIGGER.display_text())
         self.edit_popup_button.setToolTip(
-            "按 Esc 取消，按 Backspace 恢复默认"
+            _tooltip("按 Esc 取消，按 Backspace 恢复默认")
         )
         self.edit_popup_button.mouse_captured.connect(
             self._apply_edit_trigger
@@ -1216,7 +1238,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             "导出资产库未翻译名称", self.button_container
         )
         self.export_library_button.setToolTip(
-            "导出资源库中尚无有效中文译文的资产名称"
+            _tooltip("导出资源库中尚无有效中文译文的资产名称")
         )
         self.export_library_button.clicked.connect(
             self._export_asset_library_names
@@ -1932,8 +1954,8 @@ def _set_designer_graph_translation(enabled):
         result = QtWidgets.QMessageBox.warning(
             dialog or _get_main_window(),
             "启用节点翻译",
-            "节点翻译需要临时修改 Designer 主程序的 Qt绘制导入表， "
-            "启用时会有未知风险。 "
+            "节点翻译需要临时修改Designer主程序的Qt绘制导入表。\n"
+            "启用时会有未知风险， "
             "仍要启用吗？",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,

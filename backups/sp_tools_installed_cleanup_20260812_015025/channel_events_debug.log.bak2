@@ -1,0 +1,3 @@
+EVENT TextureStateEvent action=<TextureStateEventAction.REMOVE: 3> channel=<ChannelType.BaseColor: 1>
+EVENT TextureStateEvent action=<TextureStateEventAction.ADD: 1> channel=<ChannelType.BaseColor: 1>
+rebuild_for_channel_change: changed=True

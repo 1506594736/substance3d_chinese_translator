@@ -44,6 +44,24 @@ check(
     mod.ENABLE_SHORTCUT_DEFAULT,
 )
 
+# ---------- 原生提示格式化 ----------
+check(
+    "short tooltip is rich paragraph without breaks",
+    mod._tooltip("按 Esc 取消") == "<p>按 Esc 取消</p>",
+    mod._tooltip("按 Esc 取消"),
+)
+long_text = (
+    "勾选时插件翻译生效。"
+    "取消勾选时停止翻译并立即恢复所有界面原文显示。"
+    "仅影响显示。"
+)
+html = mod._tooltip(long_text)
+check(
+    "long tooltip is one paragraph for Qt auto wrap",
+    html == "<p>" + long_text + "</p>" and "<br/>" not in html,
+    html,
+)
+
 # ---------- CaptureButton：纯键盘模式 ----------
 btn = mod.CaptureButton(capture_mouse=False)
 keys, restores, cancels = [], [], []

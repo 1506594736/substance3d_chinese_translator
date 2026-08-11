@@ -1,0 +1,3 @@
+EVENT TextureStateEvent action=<TextureStateEventAction.ADD: 1> channel=<ChannelType.BaseColor: 1> stack=30 tile=(0, 0)
+apply_channel_event: action=<TextureStateEventAction.ADD: 1> channel='BaseColor' channels=['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']

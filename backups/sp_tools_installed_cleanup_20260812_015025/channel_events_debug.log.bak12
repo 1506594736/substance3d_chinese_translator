@@ -1,0 +1,378 @@
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+layer panel refresh: rebuild uid=6202 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] dock=Tool ptr=0x28710a503f0
+QDockWidget(Tool) ptr=0x28710a503f0 vis=True geo=(2052,621,472,724)
+  QAbstractButton(qt_dockwidget_floatbutton) ptr=0x28712381550 vis=False geo=(0,0,100,30)
+  QAbstractButton(qt_dockwidget_closebutton) ptr=0x287123814d0 vis=False geo=(0,0,100,30)
+  QWidget() ptr=0x28712433630 vis=True geo=(0,0,472,32)
+    QLabel() ptr=0x28710a4fca0 vis=True geo=(2,2,79,28)
+    QToolButton(undockButton) ptr=0x28710a4fa60 vis=True geo=(412,2,28,28)
+    QToolButton(closeButton) ptr=0x28710a50030 vis=True geo=(442,2,28,28)
+  QFrame(Tool) ptr=0x28711524f80 vis=True geo=(0,32,472,692)
+    QFrame(GeometryMaskView) ptr=0x28712380990 vis=False geo=(0,0,100,30)
+      QFrame(geometryMaskTypeGroup) ptr=0x2871210b040 vis=False geo=(0,0,100,15)
+        QLabel(geometryMaskTypeLabel) ptr=0x28712109810 vis=False geo=(0,0,38,6)
+        QComboBox(geometryMaskType) ptr=0x287123807d0 vis=False geo=(42,0,38,26)
+          QFrame() ptr=0x2871264bd90 vis=False geo=(0,0,100,30)
+            QListView() ptr=0x28712380250 vis=False geo=(0,2,100,28)
+              QWidget(qt_scrollarea_viewport) ptr=0x28710a4d270 vis=False geo=(2,2,84,24)
+              QWidget(qt_scrollarea_hcontainer) ptr=0x2871232c840 vis=False geo=(0,0,100,12)
+                QScrollBar() ptr=0x28710a4ce50 vis=False geo=(0,0,100,12)
+              QWidget(qt_scrollarea_vcontainer) ptr=0x2871232da10 vis=False geo=(86,2,12,24)
+                QScrollBar() ptr=0x28710a4ca30 vis=False geo=(0,0,12,24)
+        QLabel(help_button) ptr=0x28710a4cd60 vis=False geo=(84,0,16,16)
+        QLabel(counters) ptr=0x28710a4d6c0 vis=False geo=(69,10,6,5)
+        QToolButton(button) ptr=0x28710a4d660 vis=False geo=(79,10,21,5)
+          QMenu(menu) ptr=0x28710a4e500 vis=False geo=(0,0,100,30)
+      QWidget(widget) ptr=0x28710a4e110 vis=False geo=(0,15,100,15)
+        QListView(listview) ptr=0x28710a4e7a0 vis=False geo=(0,0,100,15)
+          QWidget(qt_scrollarea_viewport) ptr=0x28710a4e440 vis=False geo=(0,0,100,15)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x2871232dd80 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x28710a4e680 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x2871232e370 vis=False geo=(0,0,12,30)
+            QScrollBar() ptr=0x28710a4eda0 vis=False geo=(0,0,12,30)
+    QWidget(图层属性编辑器) ptr=0x2871237e090 vis=False geo=(0,0,100,30)
+      QFrame(LayerInstanceView) ptr=0x2871237e950 vis=False geo=(0,0,100,30)
+        QLabel(title) ptr=0x28712110740 vis=False geo=(0,0,100,8)
+        QTreeView(instances_view) ptr=0x2871210ff60 vis=False geo=(0,12,100,7)
+          QWidget(qt_scrollarea_viewport) ptr=0x2871210fed0 vis=False geo=(4,4,92,0)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x28712332d80 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x2871210fd50 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x28712333be0 vis=False geo=(0,0,12,30)
+            QScrollBar() ptr=0x28712110d40 vis=False geo=(0,0,12,30)
+          QHeaderView() ptr=0x28712109ab0 vis=False geo=(4,4,92,0)
+            QWidget(qt_scrollarea_viewport) ptr=0x28712109900 vis=False geo=(0,0,92,0)
+            QWidget(qt_scrollarea_hcontainer) ptr=0x287123339b0 vis=False geo=(0,0,100,12)
+              QScrollBar() ptr=0x287121094b0 vis=False geo=(0,0,100,12)
+            QWidget(qt_scrollarea_vcontainer) ptr=0x28712333140 vis=False geo=(0,0,12,30)
+              QScrollBar() ptr=0x28712109120 vis=False geo=(0,0,12,30)
+        QTextEdit(error_message) ptr=0x2871210a4d0 vis=False geo=(0,23,100,7)
+          QWidget(qt_scrollarea_viewport) ptr=0x2871210a5f0 vis=False geo=(5,7,78,0)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x287123344a0 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x2871210a140 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x28712334360 vis=False geo=(83,7,12,0)
+            QScrollBar() ptr=0x2871210a7a0 vis=False geo=(0,0,12,0)
+    QWidget() ptr=0x2871210d800 vis=False geo=(0,0,472,692)
+      QLabel(layer-no-properties) ptr=0x2871210d1a0 vis=False geo=(0,0,472,26)
+    QWidget(动作编辑器) ptr=0x287115240c0 vis=True geo=(0,0,472,692)
+      QStackedWidget() ptr=0x2871210d2c0 vis=True geo=(0,0,472,692)
+        QFrame(ActionFillView) ptr=0x28757b0ee00 vis=True geo=(0,0,472,692)
+          QWidget(tabs) ptr=0x28757b0f480 vis=True geo=(0,0,472,692)
+            QScrollArea(scrollArea) ptr=0x28757cfa5d0 vis=True geo=(0,36,472,656)
+              QWidget(qt_scrollarea_viewport) ptr=0x28757cfade0 vis=True geo=(0,0,460,644)
+                QFrame(scrollAreaWidgetContents) ptr=0x28757cfb1a0 vis=True geo=(0,0,460,656)
+              QWidget(qt_scrollarea_hcontainer) ptr=0x28759c52fa0 vis=True geo=(0,644,460,12)
+                QScrollBar() ptr=0x28757cfa390 vis=True geo=(0,0,460,12)
+              QWidget(qt_scrollarea_vcontainer) ptr=0x28759c539f0 vis=True geo=(460,0,12,644)
+                QScrollBar() ptr=0x28757cfa510 vis=True geo=(0,0,12,644)
+            QWidget(bookmarkBar) ptr=0x28757b0f280 vis=True geo=(0,4,472,32)
+              QWidget(widgetContent) ptr=0x28757cfbad0 vis=True geo=(0,0,472,32)
+                QWidget(tabBar) ptr=0x28757cfbd70 vis=True geo=(0,0,102,32)
+      QWidget(ToolPreviewWidgets) ptr=0x28710a42b50 vis=False geo=(0,0,100,30)
+        QFrame() ptr=0x287115241c0 vis=False geo=(0,4,48,120)
+          QWidget() ptr=0x286f92af290 vis=False geo=(0,0,48,120)
+        QFrame() ptr=0x287123285f0 vis=False geo=(52,4,48,120)
+          QWidget() ptr=0x2870e282dd0 vis=False geo=(0,0,48,120)
+our_panel ptr=0x287543fe630 QWidget(materialModeParams)vis=True <- QFrame(frame)vis=True <- QFrame(materialView)vis=True <- QFrame(sourcesView)vis=True <- QFrame()vis=True <- QFrame()vis=True <- QFrame(pages)vis=True <- QFrame(scrollAreaWidgetContents)vis=True
+hint ptr=0x28736d5da90 text='未发现任何属性' QLabel(layer-no-properties)vis=False <- QWidget()vis=False <- QFrame(Tool)vis=False <- QWidget(qt_scrollarea_viewport)vis=False <- QScrollArea()vis=False <- QWidget()vis=False <- QDockWidget()vis=False <- QMainWindow(S4MainWindow)vis=True
+layer panel refresh: rebuild uid=6228 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] dock=Tool ptr=0x28710a503f0
+QDockWidget(Tool) ptr=0x28710a503f0 vis=True geo=(2052,621,472,724)
+  QAbstractButton(qt_dockwidget_floatbutton) ptr=0x28712381550 vis=False geo=(0,0,100,30)
+  QAbstractButton(qt_dockwidget_closebutton) ptr=0x287123814d0 vis=False geo=(0,0,100,30)
+  QWidget() ptr=0x28712433630 vis=True geo=(0,0,472,32)
+    QLabel() ptr=0x28710a4fca0 vis=True geo=(2,2,32,28)
+    QToolButton(undockButton) ptr=0x28710a4fa60 vis=True geo=(412,2,28,28)
+    QToolButton(closeButton) ptr=0x28710a50030 vis=True geo=(442,2,28,28)
+  QFrame(Tool) ptr=0x28711524f80 vis=True geo=(0,32,472,692)
+    QFrame(GeometryMaskView) ptr=0x28712380990 vis=False geo=(0,0,100,30)
+      QFrame(geometryMaskTypeGroup) ptr=0x2871210b040 vis=False geo=(0,0,100,15)
+        QLabel(geometryMaskTypeLabel) ptr=0x28712109810 vis=False geo=(0,0,38,6)
+        QComboBox(geometryMaskType) ptr=0x287123807d0 vis=False geo=(42,0,38,26)
+          QFrame() ptr=0x2871264bd90 vis=False geo=(0,0,100,30)
+            QListView() ptr=0x28712380250 vis=False geo=(0,2,100,28)
+              QWidget(qt_scrollarea_viewport) ptr=0x28710a4d270 vis=False geo=(2,2,84,24)
+              QWidget(qt_scrollarea_hcontainer) ptr=0x2871232c840 vis=False geo=(0,0,100,12)
+                QScrollBar() ptr=0x28710a4ce50 vis=False geo=(0,0,100,12)
+              QWidget(qt_scrollarea_vcontainer) ptr=0x2871232da10 vis=False geo=(86,2,12,24)
+                QScrollBar() ptr=0x28710a4ca30 vis=False geo=(0,0,12,24)
+        QLabel(help_button) ptr=0x28710a4cd60 vis=False geo=(84,0,16,16)
+        QLabel(counters) ptr=0x28710a4d6c0 vis=False geo=(69,10,6,5)
+        QToolButton(button) ptr=0x28710a4d660 vis=False geo=(79,10,21,5)
+          QMenu(menu) ptr=0x28710a4e500 vis=False geo=(0,0,100,30)
+      QWidget(widget) ptr=0x28710a4e110 vis=False geo=(0,15,100,15)
+        QListView(listview) ptr=0x28710a4e7a0 vis=False geo=(0,0,100,15)
+          QWidget(qt_scrollarea_viewport) ptr=0x28710a4e440 vis=False geo=(0,0,100,15)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x2871232dd80 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x28710a4e680 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x2871232e370 vis=False geo=(0,0,12,30)
+            QScrollBar() ptr=0x28710a4eda0 vis=False geo=(0,0,12,30)
+    QWidget(图层属性编辑器) ptr=0x2871237e090 vis=False geo=(0,0,100,30)
+      QFrame(LayerInstanceView) ptr=0x2871237e950 vis=False geo=(0,0,100,30)
+        QLabel(title) ptr=0x28712110740 vis=False geo=(0,0,100,8)
+        QTreeView(instances_view) ptr=0x2871210ff60 vis=False geo=(0,12,100,7)
+          QWidget(qt_scrollarea_viewport) ptr=0x2871210fed0 vis=False geo=(4,4,92,0)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x28712332d80 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x2871210fd50 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x28712333be0 vis=False geo=(0,0,12,30)
+            QScrollBar() ptr=0x28712110d40 vis=False geo=(0,0,12,30)
+          QHeaderView() ptr=0x28712109ab0 vis=False geo=(4,4,92,0)
+            QWidget(qt_scrollarea_viewport) ptr=0x28712109900 vis=False geo=(0,0,92,0)
+            QWidget(qt_scrollarea_hcontainer) ptr=0x287123339b0 vis=False geo=(0,0,100,12)
+              QScrollBar() ptr=0x287121094b0 vis=False geo=(0,0,100,12)
+            QWidget(qt_scrollarea_vcontainer) ptr=0x28712333140 vis=False geo=(0,0,12,30)
+              QScrollBar() ptr=0x28712109120 vis=False geo=(0,0,12,30)
+        QTextEdit(error_message) ptr=0x2871210a4d0 vis=False geo=(0,23,100,7)
+          QWidget(qt_scrollarea_viewport) ptr=0x2871210a5f0 vis=False geo=(5,7,78,0)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x287123344a0 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x2871210a140 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x28712334360 vis=False geo=(83,7,12,0)
+            QScrollBar() ptr=0x2871210a7a0 vis=False geo=(0,0,12,0)
+    QWidget(动作编辑器) ptr=0x287115240c0 vis=False geo=(0,0,472,692)
+      QStackedWidget() ptr=0x2871210d2c0 vis=False geo=(0,0,472,692)
+        QFrame(ActionFillView) ptr=0x28757b0ee00 vis=False geo=(0,0,472,692)
+          QWidget(tabs) ptr=0x28757b0f480 vis=False geo=(0,0,472,692)
+            QScrollArea(scrollArea) ptr=0x28757cfa5d0 vis=False geo=(0,38,472,654)
+              QWidget(qt_scrollarea_viewport) ptr=0x28757cfade0 vis=False geo=(0,0,460,654)
+                QFrame(scrollAreaWidgetContents) ptr=0x28757cfb1a0 vis=False geo=(0,0,460,1029)
+              QWidget(qt_scrollarea_hcontainer) ptr=0x28759c52fa0 vis=False geo=(0,644,460,12)
+                QScrollBar() ptr=0x28757cfa390 vis=False geo=(0,0,460,12)
+              QWidget(qt_scrollarea_vcontainer) ptr=0x28759c539f0 vis=False geo=(460,0,12,654)
+                QScrollBar() ptr=0x28757cfa510 vis=False geo=(0,0,12,654)
+            QWidget(bookmarkBar) ptr=0x28757b0f280 vis=False geo=(0,4,472,34)
+              QWidget(widgetContent) ptr=0x28757cfbad0 vis=False geo=(0,0,472,34)
+                QWidget(tabBar) ptr=0x28757cfbd70 vis=False geo=(0,0,102,34)
+      QWidget(ToolPreviewWidgets) ptr=0x28710a42b50 vis=False geo=(0,0,100,30)
+        QFrame() ptr=0x287115241c0 vis=False geo=(0,4,48,120)
+          QWidget() ptr=0x286f92af290 vis=False geo=(0,0,48,120)
+        QFrame() ptr=0x287123285f0 vis=False geo=(52,4,48,120)
+          QWidget() ptr=0x2870e282dd0 vis=False geo=(0,0,48,120)
+    QWidget() ptr=0x2871210d800 vis=True geo=(0,0,472,692)
+      QLabel(layer-no-properties) ptr=0x2871210d1a0 vis=True geo=(0,0,472,26)
+      QWidget(sp_tools_channel_panel) ptr=0x287931d7de0 vis=True geo=(0,32,472,182)
+        QWidget(sp_tools_channel_row) ptr=0x287931d93d0 vis=True geo=(0,12,472,22)
+          QLabel() ptr=0x287931d9250 vis=True geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287931d8bc0 vis=True geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287931d8e90 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287931debc0 vis=True geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287931df550 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287931df820 vis=False geo=(0,0,160,480)
+        QWidget(sp_tools_channel_row) ptr=0x287931e00f0 vis=True geo=(0,46,472,22)
+          QLabel() ptr=0x287931d9d90 vis=True geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287931debf0 vis=True geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287931dfa00 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287931e19e0 vis=True geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287931e1a40 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287931e1a10 vis=False geo=(0,0,160,480)
+        QWidget(sp_tools_channel_row) ptr=0x287931e25e0 vis=True geo=(0,80,472,22)
+          QLabel() ptr=0x287931d3520 vis=True geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287931d2f50 vis=True geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287931d3280 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287931d6100 vis=True geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287931e2550 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287931d43f0 vis=False geo=(0,0,160,480)
+        QWidget(sp_tools_channel_row) ptr=0x287a14f85f0 vis=True geo=(0,114,472,22)
+          QLabel() ptr=0x287a14f87d0 vis=True geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287a14f8800 vis=True geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287a14f82c0 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287a14eb4e0 vis=True geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287a14eb180 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287a14ebba0 vis=False geo=(0,0,160,480)
+        QWidget(sp_tools_channel_row) ptr=0x287a14eb030 vis=True geo=(0,148,472,22)
+          QLabel() ptr=0x287a14ec380 vis=True geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287a14ec5f0 vis=True geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287a14ec410 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287a14ef800 vis=True geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287a14eeff0 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287a14efd10 vis=False geo=(0,0,160,480)
+our_panel ptr=0x287931d7de0 QWidget()vis=True <- QFrame(Tool)vis=True <- QDockWidget(Tool)vis=True <- QMainWindow(S4MainWindow)vis=True
+hint ptr=0x28736d5da90 text='未发现任何属性' QLabel(layer-no-properties)vis=False <- QWidget()vis=False <- QFrame(Tool)vis=False <- QWidget(qt_scrollarea_viewport)vis=False <- QScrollArea()vis=False <- QWidget()vis=False <- QDockWidget()vis=False <- QMainWindow(S4MainWindow)vis=True
+layer panel refresh: rebuild uid=6202 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] dock=Tool ptr=0x28710a503f0
+QDockWidget(Tool) ptr=0x28710a503f0 vis=True geo=(2052,621,472,724)
+  QAbstractButton(qt_dockwidget_floatbutton) ptr=0x28712381550 vis=False geo=(0,0,100,30)
+  QAbstractButton(qt_dockwidget_closebutton) ptr=0x287123814d0 vis=False geo=(0,0,100,30)
+  QWidget() ptr=0x28712433630 vis=True geo=(0,0,472,32)
+    QLabel() ptr=0x28710a4fca0 vis=True geo=(2,2,66,28)
+    QToolButton(undockButton) ptr=0x28710a4fa60 vis=True geo=(412,2,28,28)
+    QToolButton(closeButton) ptr=0x28710a50030 vis=True geo=(442,2,28,28)
+  QFrame(Tool) ptr=0x28711524f80 vis=True geo=(0,32,472,692)
+    QFrame(GeometryMaskView) ptr=0x28712380990 vis=False geo=(0,0,100,30)
+      QFrame(geometryMaskTypeGroup) ptr=0x2871210b040 vis=False geo=(0,0,100,15)
+        QLabel(geometryMaskTypeLabel) ptr=0x28712109810 vis=False geo=(0,0,38,6)
+        QComboBox(geometryMaskType) ptr=0x287123807d0 vis=False geo=(42,0,38,26)
+          QFrame() ptr=0x2871264bd90 vis=False geo=(0,0,100,30)
+            QListView() ptr=0x28712380250 vis=False geo=(0,2,100,28)
+              QWidget(qt_scrollarea_viewport) ptr=0x28710a4d270 vis=False geo=(2,2,84,24)
+              QWidget(qt_scrollarea_hcontainer) ptr=0x2871232c840 vis=False geo=(0,0,100,12)
+                QScrollBar() ptr=0x28710a4ce50 vis=False geo=(0,0,100,12)
+              QWidget(qt_scrollarea_vcontainer) ptr=0x2871232da10 vis=False geo=(86,2,12,24)
+                QScrollBar() ptr=0x28710a4ca30 vis=False geo=(0,0,12,24)
+        QLabel(help_button) ptr=0x28710a4cd60 vis=False geo=(84,0,16,16)
+        QLabel(counters) ptr=0x28710a4d6c0 vis=False geo=(69,10,6,5)
+        QToolButton(button) ptr=0x28710a4d660 vis=False geo=(79,10,21,5)
+          QMenu(menu) ptr=0x28710a4e500 vis=False geo=(0,0,100,30)
+      QWidget(widget) ptr=0x28710a4e110 vis=False geo=(0,15,100,15)
+        QListView(listview) ptr=0x28710a4e7a0 vis=False geo=(0,0,100,15)
+          QWidget(qt_scrollarea_viewport) ptr=0x28710a4e440 vis=False geo=(0,0,100,15)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x2871232dd80 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x28710a4e680 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x2871232e370 vis=False geo=(0,0,12,30)
+            QScrollBar() ptr=0x28710a4eda0 vis=False geo=(0,0,12,30)
+    QWidget(图层属性编辑器) ptr=0x2871237e090 vis=False geo=(0,0,100,30)
+      QFrame(LayerInstanceView) ptr=0x2871237e950 vis=False geo=(0,0,100,30)
+        QLabel(title) ptr=0x28712110740 vis=False geo=(0,0,100,8)
+        QTreeView(instances_view) ptr=0x2871210ff60 vis=False geo=(0,12,100,7)
+          QWidget(qt_scrollarea_viewport) ptr=0x2871210fed0 vis=False geo=(4,4,92,0)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x28712332d80 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x2871210fd50 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x28712333be0 vis=False geo=(0,0,12,30)
+            QScrollBar() ptr=0x28712110d40 vis=False geo=(0,0,12,30)
+          QHeaderView() ptr=0x28712109ab0 vis=False geo=(4,4,92,0)
+            QWidget(qt_scrollarea_viewport) ptr=0x28712109900 vis=False geo=(0,0,92,0)
+            QWidget(qt_scrollarea_hcontainer) ptr=0x287123339b0 vis=False geo=(0,0,100,12)
+              QScrollBar() ptr=0x287121094b0 vis=False geo=(0,0,100,12)
+            QWidget(qt_scrollarea_vcontainer) ptr=0x28712333140 vis=False geo=(0,0,12,30)
+              QScrollBar() ptr=0x28712109120 vis=False geo=(0,0,12,30)
+        QTextEdit(error_message) ptr=0x2871210a4d0 vis=False geo=(0,23,100,7)
+          QWidget(qt_scrollarea_viewport) ptr=0x2871210a5f0 vis=False geo=(5,7,78,0)
+          QWidget(qt_scrollarea_hcontainer) ptr=0x287123344a0 vis=False geo=(0,0,100,12)
+            QScrollBar() ptr=0x2871210a140 vis=False geo=(0,0,100,12)
+          QWidget(qt_scrollarea_vcontainer) ptr=0x28712334360 vis=False geo=(83,7,12,0)
+            QScrollBar() ptr=0x2871210a7a0 vis=False geo=(0,0,12,0)
+    QWidget() ptr=0x2871210d800 vis=False geo=(0,0,472,692)
+      QLabel(layer-no-properties) ptr=0x2871210d1a0 vis=False geo=(0,0,472,26)
+      QWidget(sp_tools_channel_panel) ptr=0x287931d7de0 vis=False geo=(0,32,472,182)
+        QWidget(sp_tools_channel_row) ptr=0x287931d93d0 vis=False geo=(0,12,472,22)
+          QLabel() ptr=0x287931d9250 vis=False geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287931d8bc0 vis=False geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287931d8e90 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287931debc0 vis=False geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287931df550 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287931df820 vis=False geo=(1,1,160,16)
+        QWidget(sp_tools_channel_row) ptr=0x287931e00f0 vis=False geo=(0,46,472,22)
+          QLabel() ptr=0x287931d9d90 vis=False geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287931debf0 vis=False geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287931dfa00 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287931e19e0 vis=False geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287931e1a40 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287931e1a10 vis=False geo=(1,1,160,16)
+        QWidget(sp_tools_channel_row) ptr=0x287931e25e0 vis=False geo=(0,80,472,22)
+          QLabel() ptr=0x287931d3520 vis=False geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287931d2f50 vis=False geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287931d3280 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287931d6100 vis=False geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287931e2550 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287931d43f0 vis=False geo=(1,1,160,16)
+        QWidget(sp_tools_channel_row) ptr=0x287a14f85f0 vis=False geo=(0,114,472,22)
+          QLabel() ptr=0x287a14f87d0 vis=False geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287a14f8800 vis=False geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287a14f82c0 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287a14eb4e0 vis=False geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287a14eb180 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287a14ebba0 vis=False geo=(1,1,160,16)
+        QWidget(sp_tools_channel_row) ptr=0x287a14eb030 vis=False geo=(0,148,472,22)
+          QLabel() ptr=0x287a14ec380 vis=False geo=(0,4,139,14)
+          QToolButton(blendingMode) ptr=0x287a14ec5f0 vis=False geo=(143,0,232,22)
+            QMenu(blendingModeMenu) ptr=0x287a14ec410 vis=False geo=(0,0,100,30)
+          QToolButton(opacity) ptr=0x287a14ef800 vis=False geo=(379,0,93,22)
+            QMenu(opacityMenu) ptr=0x287a14eeff0 vis=False geo=(0,0,100,30)
+              QSlider(slider_) ptr=0x287a14efd10 vis=False geo=(1,1,160,16)
+    QWidget(动作编辑器) ptr=0x287115240c0 vis=True geo=(0,0,472,692)
+      QStackedWidget() ptr=0x2871210d2c0 vis=True geo=(0,0,472,692)
+        QFrame(ActionFillView) ptr=0x28757b0ee00 vis=True geo=(0,0,472,692)
+          QWidget(tabs) ptr=0x28757b0f480 vis=True geo=(0,0,472,692)
+            QScrollArea(scrollArea) ptr=0x28757cfa5d0 vis=True geo=(0,38,472,654)
+              QWidget(qt_scrollarea_viewport) ptr=0x28757cfade0 vis=True geo=(0,0,460,654)
+                QFrame(scrollAreaWidgetContents) ptr=0x28757cfb1a0 vis=True geo=(0,0,460,1029)
+              QWidget(qt_scrollarea_hcontainer) ptr=0x28759c52fa0 vis=False geo=(0,644,460,12)
+                QScrollBar() ptr=0x28757cfa390 vis=False geo=(0,0,460,12)
+              QWidget(qt_scrollarea_vcontainer) ptr=0x28759c539f0 vis=True geo=(460,0,12,654)
+                QScrollBar() ptr=0x28757cfa510 vis=True geo=(0,0,12,654)
+            QWidget(bookmarkBar) ptr=0x28757b0f280 vis=True geo=(0,4,472,34)
+              QWidget(widgetContent) ptr=0x28757cfbad0 vis=True geo=(0,0,472,34)
+                QWidget(tabBar) ptr=0x28757cfbd70 vis=True geo=(0,0,102,34)
+      QWidget(ToolPreviewWidgets) ptr=0x28710a42b50 vis=False geo=(0,0,100,30)
+        QFrame() ptr=0x287115241c0 vis=False geo=(0,4,48,120)
+          QWidget() ptr=0x286f92af290 vis=False geo=(0,0,48,120)
+        QFrame() ptr=0x287123285f0 vis=False geo=(52,4,48,120)
+          QWidget() ptr=0x2870e282dd0 vis=False geo=(0,0,48,120)
+our_panel ptr=0x287931d7de0 QWidget()vis=False <- QFrame(Tool)vis=True <- QDockWidget(Tool)vis=True <- QMainWindow(S4MainWindow)vis=True
+hint ptr=0x28736d5da90 text='未发现任何属性' QLabel(layer-no-properties)vis=False <- QWidget()vis=False <- QFrame(Tool)vis=False <- QWidget(qt_scrollarea_viewport)vis=False <- QScrollArea()vis=False <- QWidget()vis=False <- QDockWidget()vis=False <- QMainWindow(S4MainWindow)vis=True
+layer panel refresh: rebuild uid=6202 channel_changed=True
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] ERR RuntimeError('Internal C++ object (PySide6.QtWidgets.QVBoxLayout) already deleted.') Traceback (most recent call last):
+  File "C:\Users/liuwenbo/Documents/Adobe/Adobe Substance 3D Painter/python\plugins\sp_tools\__init__.py", line 570, in _debug_inspect_panel
+    for r in range(lay.count()):
+                   ^^^^^^^^^^^
+RuntimeError: Internal C++ object (PySide6.QtWidgets.QVBoxLayout) already deleted.
+
+layer panel refresh: rebuild uid=37 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] ERR RuntimeError('Internal C++ object (PySide6.QtWidgets.QVBoxLayout) already deleted.') Traceback (most recent call last):
+  File "C:\Users/liuwenbo/Documents/Adobe/Adobe Substance 3D Painter/python\plugins\sp_tools\__init__.py", line 570, in _debug_inspect_panel
+    for r in range(lay.count()):
+                   ^^^^^^^^^^^
+RuntimeError: Internal C++ object (PySide6.QtWidgets.QVBoxLayout) already deleted.
+
+layer panel refresh: rebuild uid=6202 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] ERR RuntimeError('Internal C++ object (PySide6.QtWidgets.QVBoxLayout) already deleted.') Traceback (most recent call last):
+  File "C:\Users/liuwenbo/Documents/Adobe/Adobe Substance 3D Painter/python\plugins\sp_tools\__init__.py", line 570, in _debug_inspect_panel
+    for r in range(lay.count()):
+                   ^^^^^^^^^^^
+RuntimeError: Internal C++ object (PySide6.QtWidgets.QVBoxLayout) already deleted.
+
+layer panel refresh: rebuild uid=6202 channel_changed=True
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] panel[0] ptr=0x2875b0571d0 vis=True geo=(0,30,426,124) spacing=4 margins=<PySide6.QtCore.QMargins(0, 4, 0, 4) at 0x00000286FE0ECAC0>
+panel[0] chain=QWidget(materialModeParams)vis=True <- QFrame(frame)vis=True <- QFrame(materialView)vis=True <- QFrame(sourcesView)vis=True <- QFrame()vis=True <- QFrame()vis=True <- QFrame(pages)vis=True <- QFrame(scrollAreaWidgetContents)vis=True
+  row dump err
+panel[1] ptr=0x28754664040 vis=True geo=(0,30,426,124) spacing=4 margins=<PySide6.QtCore.QMargins(0, 4, 0, 4) at 0x00000286FE0ED6C0>
+panel[1] chain=QWidget(materialModeParams)vis=True <- QFrame(frame)vis=True <- QFrame(materialView)vis=True <- QFrame(sourcesView)vis=True <- QFrame()vis=True <- QFrame()vis=True <- QFrame(pages)vis=True <- QFrame(scrollAreaWidgetContents)vis=True
+  row dump err
+materialModeParams ptr=0x2874b9ae7f0 vis=False geo=(0,0,227,106) layout=QVBoxLayout spacing=10 margins=<PySide6.QtCore.QMargins(0, 0, 0, 0) at 0x00000286FC8D7980>
+  material[0] QWidget(channelButtons) vis=False geo=(0,0,227,46)
+  material[1] QFrame(sourceSelector) vis=False geo=(0,56,227,40)
+  material[3] QWidget(spacer) vis=False geo=(0,106,227,0)
+layer panel refresh: rebuild uid=37 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] panel[0] ptr=0x28754664820 vis=True geo=(0,30,426,124) spacing=4 margins=<PySide6.QtCore.QMargins(0, 4, 0, 4) at 0x00000286FE0EE300>
+panel[0] chain=QWidget(materialModeParams)vis=True <- QFrame(frame)vis=True <- QFrame(materialView)vis=True <- QFrame(SourcesView)vis=True <- QFrame()vis=True <- QFrame()vis=True <- QFrame(pages)vis=True <- QFrame(scrollAreaWidgetContents)vis=True
+  row dump err
+panel[1] ptr=0x2875b0571d0 vis=False geo=(0,30,426,124) spacing=4 margins=<PySide6.QtCore.QMargins(0, 4, 0, 4) at 0x00000286FCCCB4C0>
+panel[1] chain=QWidget(materialModeParams)vis=False <- QFrame(frame)vis=False <- QFrame(materialView)vis=False <- QFrame(sourcesView)vis=False <- QFrame()vis=False <- QFrame()vis=False <- QFrame(pages)vis=False <- QFrame(scrollAreaWidgetContents)vis=False
+  row dump err
+materialModeParams ptr=0x2874b9ae7f0 vis=False geo=(0,0,227,107) layout=QVBoxLayout spacing=10 margins=<PySide6.QtCore.QMargins(0, 0, 0, 0) at 0x00000286FC8D7980>
+  material[0] QWidget(channelButtons) vis=False geo=(0,0,227,46)
+  material[1] QFrame(sourceSelector) vis=False geo=(0,56,227,40)
+  material[3] QWidget(spacer) vis=False geo=(0,106,227,1)
+layer panel refresh: rebuild uid=6202 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] panel[0] ptr=0x28754664820 vis=False geo=(0,30,426,124) spacing=4 margins=<PySide6.QtCore.QMargins(0, 4, 0, 4) at 0x00000286FE0DE6C0>
+panel[0] chain=QWidget(materialModeParams)vis=False <- QFrame(frame)vis=False <- QFrame(materialView)vis=False <- QFrame(SourcesView)vis=False <- QFrame()vis=False <- QFrame()vis=False <- QFrame(pages)vis=False <- QFrame(scrollAreaWidgetContents)vis=False
+  row dump err
+panel[1] ptr=0x28770c54140 vis=True geo=(0,30,426,124) spacing=4 margins=<PySide6.QtCore.QMargins(0, 4, 0, 4) at 0x00000286FE0FE040>
+panel[1] chain=QWidget(materialModeParams)vis=True <- QFrame(frame)vis=True <- QFrame(materialView)vis=True <- QFrame(sourcesView)vis=True <- QFrame()vis=True <- QFrame()vis=True <- QFrame(pages)vis=True <- QFrame(scrollAreaWidgetContents)vis=True
+  row dump err
+materialModeParams ptr=0x2874b9ae7f0 vis=False geo=(0,0,227,107) layout=QVBoxLayout spacing=10 margins=<PySide6.QtCore.QMargins(0, 0, 0, 0) at 0x00000286FE685400>
+  material[0] QWidget(channelButtons) vis=False geo=(0,0,227,46)
+  material[1] QFrame(sourceSelector) vis=False geo=(0,56,227,40)
+  material[3] QWidget(spacer) vis=False geo=(0,106,227,1)
+layer panel refresh: rebuild uid=6228 channel_changed=False
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+publish channels: ['BaseColor', 'Height', 'Roughness', 'Metallic', 'Normal']
+INSPECT[after_rebuild] panel[0] ptr=0x28770c54140 vis=False geo=(0,30,426,124) spacing=4 margins=<PySide6.QtCore.QMargins(0, 4, 0, 4) at 0x0000028752BB2900>
+panel[0] chain=QWidget(materialModeParams)vis=False <- QFrame(frame)vis=False <- QFrame(materialView)vis=False <- QFrame(sourcesView)vis=False <- QFrame()vis=False <- QFrame()vis=False <- QFrame(pages)vis=False <- QFrame(scrollAreaWidgetContents)vis=False
+  row dump err
+panel[1] ptr=0x2875b0271c0 vis=True geo=(0,32,472,182) spacing=12 margins=<PySide6.QtCore.QMargins(0, 12, 0, 12) at 0x0000028752BB2080>
+panel[1] chain=QWidget()vis=True <- QFrame(Tool)vis=True <- QDockWidget(Tool)vis=True <- QMainWindow(S4MainWindow)vis=True
+  row dump err
+materialModeParams ptr=0x2874b9ae7f0 vis=False geo=(0,0,227,107) layout=QVBoxLayout spacing=10 margins=<PySide6.QtCore.QMargins(0, 0, 0, 0) at 0x0000028752BB2300>
+  material[0] QWidget(channelButtons) vis=False geo=(0,0,227,46)
+  material[1] QFrame(sourceSelector) vis=False geo=(0,56,227,40)
+  material[3] QWidget(spacer) vis=False geo=(0,106,227,1)

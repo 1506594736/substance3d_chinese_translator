@@ -83,7 +83,11 @@ bool g_enabled = true;
 bool g_translateDesignerGraph = false;
 bool g_translateLayersPanel = true;
 bool g_fuzzyMatchEnabled = true;
-QKeySequence g_editKey = QKeySequence(QStringLiteral("Ctrl"));
+// Keep the mouse trigger as canonical text.  On Qt 6.5,
+// QKeySequence("Ctrl").isEmpty() is false but toString() returns an empty
+// string, while "Shift" and normal key sequences round-trip correctly.  A
+// QKeySequence round-trip therefore makes Ctrl+mouse impossible to match.
+QString g_editKey = QStringLiteral("Ctrl");
 int g_heldEditKey = 0;
 Qt::MouseButton g_editButton = Qt::RightButton;
 QKeySequence g_enableShortcut;
@@ -1817,6 +1821,18 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     if (!widget || shouldExcludeLayersPanel(widget))
         return {};
 
+    if (auto *graphView = qobject_cast<QGraphicsView *>(widget->parentWidget())) {
+        if (widget == graphView->viewport() && isDesignerGraphView(graphView)) {
+            QGraphicsItem *item = graphView->itemAt(position);
+            for (QGraphicsItem *current = item; current;
+                 current = current->parentItem()) {
+                const QString title = graphFullTitleFromItem(current).trimmed();
+                if (!title.isEmpty())
+                    return title;
+            }
+        }
+    }
+
     if (auto *view = qobject_cast<QAbstractItemView *>(widget->parentWidget())) {
         if (widget == view->viewport()) {
             const QModelIndex index = view->indexAt(position);
@@ -1897,6 +1913,23 @@ QString contextSourceAt(QWidget *widget, const QPoint &position) {
     if (containsCjk(displayed))
         return displayed;
     return displayed;
+}
+
+QString contextSourceAtHierarchy(QWidget *widget, const QPoint &position) {
+    if (!widget)
+        return {};
+    const QPoint globalPosition = widget->mapToGlobal(position);
+    for (QWidget *current = widget; current;
+         current = current->parentWidget()) {
+        const QString source = contextSourceAt(
+            current, current->mapFromGlobal(globalPosition)
+        );
+        if (!source.isEmpty())
+            return source;
+        if (current->isWindow())
+            break;
+    }
+    return {};
 }
 
 // 控件所属面板（广义：QDockWidget 或 QDialog/顶层窗口）：
@@ -2084,14 +2117,38 @@ QString modifierOnlySequence(Qt::KeyboardModifiers modifiers) {
     return parts.join(QLatin1Char('+'));
 }
 
+Qt::KeyboardModifiers effectiveMouseModifiers(
+    Qt::KeyboardModifiers eventModifiers) {
+    // Designer consumes Ctrl for several graph/navigation interactions and
+    // some synthesized mouse/context-menu events consequently omit
+    // ControlModifier even while the key is physically held. Merge the Qt
+    // snapshot with Windows' current key state so Ctrl+right-click remains
+    // reliable without weakening the configured shortcut check.
+    Qt::KeyboardModifiers result = eventModifiers;
+    if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
+        result |= Qt::ControlModifier;
+    if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0)
+        result |= Qt::ShiftModifier;
+    if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0)
+        result |= Qt::AltModifier;
+    return result;
+}
+
 bool editKeyActive(Qt::KeyboardModifiers modifiers) {
     if (g_editKey.isEmpty())
         return false;
+    const Qt::KeyboardModifiers eventModifiers = modifiers;
+    modifiers = effectiveMouseModifiers(modifiers);
+    shortcutDiag(QStringLiteral(
+        "EDIT modifiers event=0x%1 effective=0x%2 target=%3")
+        .arg(int(eventModifiers), 0, 16)
+        .arg(int(modifiers), 0, 16)
+        .arg(g_editKey));
     const QString modifierOnly = modifierOnlySequence(modifiers);
     const QString pressed = g_heldEditKey
         ? QKeySequence(g_heldEditKey | int(modifiers)).toString()
         : modifierOnly;
-    if (pressed.isEmpty() || pressed != g_editKey.toString()) {
+    if (pressed.isEmpty() || pressed != g_editKey) {
         // 记录的最后按键可能早已松开（残留状态，例如从 Z+左键 切回
         // Ctrl+右键 后 Z 的松开事件丢失）：残留键会把组合拼成
         // “Ctrl+Z” 导致 Ctrl+右键 失效。确认该键已不在物理按下状态时
@@ -2099,7 +2156,7 @@ bool editKeyActive(Qt::KeyboardModifiers modifiers) {
         if (g_heldEditKey != 0 && !heldKeyIsDown(g_heldEditKey)) {
             g_heldEditKey = 0;
             if (!modifierOnly.isEmpty() &&
-                modifierOnly == g_editKey.toString())
+                modifierOnly == g_editKey)
                 return true;
         }
         return false;
@@ -2533,6 +2590,45 @@ protected:
                     return true;
                 }
             } else if (!menu && mouse->button() == g_editButton &&
+                       g_editButton == Qt::RightButton &&
+                       editKeyActive(mouse->modifiers())) {
+                auto *widget = qobject_cast<QWidget *>(object);
+                if (widget) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                    const QPoint mousePos = mouse->position().toPoint();
+#else
+                    const QPoint mousePos = mouse->pos();
+#endif
+                    const QString source =
+                        contextSourceAtHierarchy(widget, mousePos);
+                    if (!source.isEmpty()) {
+                        if (g_editDialogOpen)
+                            return false;
+                        const QString uniqueId =
+                            controlUniqueId(widget, source);
+                        const QString panelName = controlPanelName(widget);
+                        QPointer<QWidget> safeWidget(widget);
+                        QTimer::singleShot(
+                            0, qApp,
+                            [source, uniqueId, panelName, safeWidget]() {
+                            QWidget *parent = safeWidget
+                                ? safeWidget->window()
+                                : QApplication::activeWindow();
+                            editTranslation(source, uniqueId, panelName,
+                                            parent);
+                        });
+                        shortcutDiag(QStringLiteral(
+                            "EDIT mouse-right source-length=%1")
+                            .arg(source.size()));
+                        event->accept();
+                        return true;
+                    }
+                    shortcutDiag(QStringLiteral(
+                        "EDIT mouse-right no-source class=%1")
+                        .arg(QString::fromLatin1(
+                            widget->metaObject()->className())));
+                }
+            } else if (!menu && mouse->button() == g_editButton &&
                        (g_editButton == Qt::LeftButton ||
                         g_editButton == Qt::MiddleButton) &&
                        editKeyActive(mouse->modifiers())) {
@@ -2574,7 +2670,9 @@ protected:
                 !editKeyActive(context->modifiers()))
                 return false;
             auto *widget = qobject_cast<QWidget *>(object);
-            const QString source = contextSourceAt(widget, context->pos());
+            const QString source = contextSourceAtHierarchy(
+                widget, context->pos()
+            );
             if (source.isEmpty())
                 return false;
             if (g_editDialogOpen)
@@ -2668,7 +2766,7 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
     // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
-    return L"20260811-graph-hook-opt-in-safe-rollback";
+    return L"20260811-ctrl-mouse-text-match";
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
@@ -2720,15 +2818,14 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_scan(
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_edit_modifier(
     int mask) {
     // 旧版兼容：修饰键掩码转成键盘序列。
-    g_editKey = QKeySequence(modifierOnlySequence(
-        Qt::KeyboardModifiers(mask)));
+    g_editKey = modifierOnlySequence(Qt::KeyboardModifiers(mask));
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_edit_key(
     const wchar_t *sequence) {
     g_editKey = sequence
-        ? QKeySequence(QString::fromWCharArray(sequence))
-        : QKeySequence();
+        ? QString::fromWCharArray(sequence).trimmed()
+        : QString();
     // 触发方式变更后，旧的“最后按下键”状态不再有意义，立即清掉，
     // 避免从“Z+左键”切回“Ctrl+右键”后残留 Z 导致右键触发失效。
     g_heldEditKey = 0;

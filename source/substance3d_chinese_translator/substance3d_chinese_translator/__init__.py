@@ -975,7 +975,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
 
         if HOST == "designer":
             self.graph_translation_check = QtWidgets.QCheckBox(
-                "启用节点图翻译（实验性，默认关闭）",
+                "启用节点翻译（有未知风险，默认关闭）",
                 translation_group,
             )
             self.graph_translation_check.setChecked(
@@ -1892,7 +1892,7 @@ def _set_layers_panel_translation(enabled):
 
 
 def _sync_designer_graph_translation():
-    """将节点图翻译设置推送到原生引擎，返回是否已安全应用。"""
+    """将节点翻译设置推送到原生引擎，返回是否已安全应用。"""
     if HOST != "designer":
         return False
     dll = _load_native_delegate()
@@ -1904,15 +1904,15 @@ def _sync_designer_graph_translation():
         )
         if TRANSLATE_DESIGNER_GRAPH and result != 1:
             print(
-                ">>> 节点图翻译未启用：Designer/Qt 版本不在"
+                ">>> 节点翻译未启用：Designer/Qt 版本不在"
                 "兼容白名单内，或原生挂钩安装校验失败。"
             )
             return False
         if not TRANSLATE_DESIGNER_GRAPH and result != 1:
-            print(">>> 警告：节点图挂钩未能全部恢复，已切换为纯转发。")
+            print(">>> 警告：节点挂钩未能全部恢复，已切换为纯转发。")
         return True
     except Exception as exc:
-        print(">>> 切换节点图翻译失败:", exc)
+        print(">>> 切换节点翻译失败:", exc)
         return False
 
 
@@ -1931,11 +1931,9 @@ def _set_designer_graph_translation(enabled):
     if enabled and not TRANSLATE_DESIGNER_GRAPH:
         result = QtWidgets.QMessageBox.warning(
             dialog or _get_main_window(),
-            "启用实验性节点图翻译",
-            "节点图翻译需要临时修改 Designer 主程序的 Qt "
-            "绘制导入表。\n\n"
-            "插件会先检查 Designer 15/16、Qt 6.5–6.9 和 64 位"
-            "运行环境；关闭开关或卸载时会立即回滚。\n\n"
+            "启用节点翻译",
+            "节点翻译需要临时修改 Designer 主程序的 Qt绘制导入表， "
+            "启用时会有未知风险。 "
             "仍要启用吗？",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
@@ -1964,7 +1962,7 @@ def _set_designer_graph_translation(enabled):
             checkbox.blockSignals(False)
         QtWidgets.QMessageBox.warning(
             dialog or _get_main_window(),
-            "节点图翻译未启用",
+            "节点翻译未启用",
             "当前 Designer/Qt 版本未通过兼容白名单，"
             "或挂钩安装校验失败。\n"
             "普通界面翻译不受影响。",

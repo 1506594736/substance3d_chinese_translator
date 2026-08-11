@@ -44,6 +44,23 @@ class GraphHookSafetyTests(unittest.TestCase):
         self.assertIn("qtMinor < 5 || qtMinor > 9", source)
         self.assertIn("uninstallGraphPainterHooks", source)
 
+    def test_edit_popup_has_press_and_graph_fallbacks(self):
+        source = CPP_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("contextSourceAtHierarchy", source)
+        self.assertIn("graphView->itemAt(position)", source)
+        self.assertIn("EDIT mouse-right no-source", source)
+        self.assertIn("effectiveMouseModifiers", source)
+        self.assertIn("GetAsyncKeyState(VK_CONTROL)", source)
+
+    def test_ctrl_mouse_trigger_does_not_round_trip_qkeysequence(self):
+        source = CPP_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('QString g_editKey = QStringLiteral("Ctrl")', source)
+        self.assertIn("pressed != g_editKey", source)
+        self.assertNotIn(
+            'QKeySequence g_editKey = QKeySequence(QStringLiteral("Ctrl"))',
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

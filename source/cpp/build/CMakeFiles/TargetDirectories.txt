@@ -1,0 +1,5 @@
+C:/Users/liuwenbo/Desktop/sp插件/substance3d_chinese_translator/source/cpp/build/CMakeFiles/translator_delegate_qt6.dir
+C:/Users/liuwenbo/Desktop/sp插件/substance3d_chinese_translator/source/cpp/build/CMakeFiles/translator_delegate_qt5.dir
+C:/Users/liuwenbo/Desktop/sp插件/substance3d_chinese_translator/source/cpp/build/CMakeFiles/translator_extractor.dir
+C:/Users/liuwenbo/Desktop/sp插件/substance3d_chinese_translator/source/cpp/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/liuwenbo/Desktop/sp插件/substance3d_chinese_translator/source/cpp/build/CMakeFiles/ZERO_CHECK.dir

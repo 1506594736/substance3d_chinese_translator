@@ -723,6 +723,12 @@ def _load_native_delegate():
         dll.sp_delegate_install.restype = ctypes.c_int
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
+        dll.sp_delegate_set_asset_catalog.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_wchar_p),
+            ctypes.POINTER(ctypes.c_wchar_p),
+        ]
+        dll.sp_delegate_set_asset_catalog.restype = None
         api_version = dll.sp_delegate_api_version()
         if api_version != 11:
             print(f">>> 原生翻译模块 API 不兼容: 需要 11，实际 {api_version}")
@@ -802,6 +808,91 @@ def _install_native_ui(app):
     except Exception as exc:
         print(">>> C++ 界面翻译引擎安装失败:", exc)
         return False
+
+
+def _wstr_array(strings):
+    array = (ctypes.c_wchar_p * len(strings))()
+    for i, value in enumerate(strings):
+        array[i] = str(value)
+    return array
+
+
+def _resource_display_name(resource, identifier):
+    """读取资源的显示名（兼容 gui_name / ResourceID.name 两种 API）。"""
+    gui_name = getattr(resource, "gui_name", None)
+    if callable(gui_name):
+        value = gui_name()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    value = getattr(identifier, "name", "")
+    if callable(value):
+        value = value()
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _build_asset_catalog():
+    """遍历全部 shelf 构建 资源名 -> resource:// URL 的全库目录。"""
+    catalog = {}
+    try:
+        shelves = list(sp.resource.Shelves.all())
+    except Exception:
+        return catalog
+    for shelf in shelves:
+        try:
+            for resource in shelf.resources():
+                try:
+                    identifier = resource.identifier()
+                    name = _resource_display_name(resource, identifier)
+                    url = identifier.url() if hasattr(identifier, "url") else None
+                    if name and url and name not in catalog:
+                        catalog[name] = str(url)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return catalog
+
+
+_asset_catalog_synced = False
+
+
+def _sync_asset_catalog():
+    """构建全库目录并传给 C++（供资产库中文搜索匹配）。"""
+    global _asset_catalog_synced
+    dll = _load_native_delegate()
+    if dll is None:
+        return False
+    catalog = _build_asset_catalog()
+    if not catalog:
+        return False  # 资源爬取可能尚未完成，稍后重试。
+    try:
+        names = list(catalog.keys())
+        urls = [catalog[name] for name in names]
+        dll.sp_delegate_set_asset_catalog(
+            len(names), _wstr_array(names), _wstr_array(urls))
+        _asset_catalog_synced = True
+        print(f">>> 资产库目录已同步: {len(names)} 个资源")
+        return True
+    except Exception as exc:
+        print(">>> 资产库目录同步失败:", exc)
+        return False
+
+
+def _on_shelf_crawling_ended(_event):
+    """资源爬取完成事件：立即补一次目录同步。"""
+    if not _asset_catalog_synced:
+        QtCore.QTimer.singleShot(0, _sync_asset_catalog)
+
+
+def _start_asset_catalog_sync():
+    """启动后监听爬取完成并延迟重试构建全库目录。"""
+    try:
+        sp.event.DISPATCHER.connect_strong(
+            sp.event.ShelfCrawlingEnded, _on_shelf_crawling_ended)
+    except Exception:
+        pass
+    for delay in (2000, 6000, 15000, 30000):
+        QtCore.QTimer.singleShot(delay, _sync_asset_catalog)
 
 
 def _write_json_atomic(path, payload):
@@ -3159,6 +3250,7 @@ def start_plugin():
     _load_saved_settings()
 
     _, _, json_load_ms, native_sync_ms, native_ui_ms = _start_native_engine()
+    _start_asset_catalog_sync()
     if not IS_TRANSLATION_ENABLED:
         _set_translation_enabled(False)
 

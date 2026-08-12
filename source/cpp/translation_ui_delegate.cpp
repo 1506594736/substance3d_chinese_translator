@@ -733,12 +733,20 @@ int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false,
 // ============================================================
 struct AssetRowCache {
     QString name;       // 英文名（绘制时由翻译委托显示中文）
+    QString url;        // resource://...（拖拽 / 双击实例化）
     QIcon icon;         // 缩略图
     QString tooltip;    // 富文本预览
     QSize sizeHint;     // 图标网格尺寸
-    QByteArray uriList; // text/uri-list（拖拽 / 双击实例化）
     QString zhName;     // 中文译名（用于中文匹配）
 };
+
+// Python 侧构建的全库资源目录（name -> resource:// url），
+// 作为中文搜索的匹配数据源，不依赖资源视图当前分类。
+struct AssetCatalogEntry {
+    QString name;
+    QString url;
+};
+std::vector<AssetCatalogEntry> g_assetCatalog;
 
 class ForwardResourceModel final : public QAbstractListModel {
 public:
@@ -797,9 +805,9 @@ public:
             if (!index.isValid() || index.row() < 0 ||
                 index.row() >= static_cast<int>(m_rows.size()))
                 continue;
-            const QByteArray bytes = m_rows.at(index.row()).uriList;
-            if (!bytes.isEmpty())
-                all += bytes;
+            const QString url = m_rows.at(index.row()).url;
+            if (!url.isEmpty())
+                all += url.toUtf8() + "\r\n";
         }
         if (!all.isEmpty())
             mime->setData(QStringLiteral("text/uri-list"), all);
@@ -823,8 +831,8 @@ public:
         if (m_searchField) {
             connect(m_searchField, &QLineEdit::textChanged, this,
                     &ChineseAssetSearch::onSearchTextChanged);
-            // 缓存只在“搜索框激活（获得焦点）”时刷新：
-            // 不监听模型信号、不在输入过程中反复刷新，避免阻塞资源加载。
+            // 图标索引只在“搜索框激活（获得焦点）”时刷新；
+            // 全库目录由 Python 构建，不监听模型信号、不在输入中刷新。
             m_searchField->installEventFilter(this);
         }
     }
@@ -833,7 +841,7 @@ public:
 
     bool eventFilter(QObject *object, QEvent *event) override {
         if (object == m_searchField && event->type() == QEvent::FocusIn) {
-            scheduleCacheBuild();
+            scheduleIconIndexBuild();
         }
         return false;
     }
@@ -848,7 +856,7 @@ private:
             return;  // 当前显示的是我们自己的 model：保持原 model 引用。
         if (model != m_origModel) {
             m_origModel = model;
-            m_cache.clear();
+            m_iconIndex.clear();
         }
     }
 
@@ -856,8 +864,6 @@ private:
         if (m_switching || !m_view)
             return;
         refreshOrigModel();
-        if (!m_origModel)
-            return;
         if (!containsCjk(text)) {
             // 非中文：交还 SP 原生过滤。
             if (m_active) {
@@ -866,31 +872,7 @@ private:
                 m_switching = false;
                 m_active = false;
             }
-            // 有挂起的中文查询（缓存未就绪时清空恢复模型）：现在模型
-            // 已恢复全量，构建缓存并把查询放回去。
-            if (!m_pendingQuery.isEmpty() && m_origModel &&
-                m_origModel->rowCount() > 0) {
-                buildCache(m_origModel->rowCount());
-                const QString query = m_pendingQuery;
-                m_pendingQuery.clear();
-                m_switching = true;
-                m_searchField->setText(query);
-                m_switching = false;
-            }
             return;
-        }
-        // 缓存未就绪：优先直接构建；若模型已被中文过滤成空，
-        // 先清空查询让模型恢复全量，再构建缓存并恢复查询。
-        if (m_cache.empty()) {
-            if (m_origModel && m_origModel->rowCount() > 0) {
-                buildCache(m_origModel->rowCount());
-            } else {
-                m_pendingQuery = text;
-                m_switching = true;
-                m_searchField->setText(QString());
-                m_switching = false;
-                return;
-            }
         }
         // 拆分中/英文片段，分别匹配中文译名与英文名（AND）。
         QString zhPart;
@@ -906,14 +888,26 @@ private:
         zhPart = zhPart.trimmed();
         enPart = enPart.trimmed();
         std::vector<AssetRowCache> matched;
-        matched.reserve(m_cache.size());
-        for (const AssetRowCache &row : m_cache) {
+        matched.reserve(g_assetCatalog.size());
+        for (const AssetCatalogEntry &entry : g_assetCatalog) {
+            const QString zhName = zhNameFor(entry.name);
             const bool zhOk = zhPart.isEmpty() ||
-                              row.zhName.contains(zhPart, Qt::CaseInsensitive);
+                              zhName.contains(zhPart, Qt::CaseInsensitive);
             const bool enOk = enPart.isEmpty() ||
-                              row.name.contains(enPart, Qt::CaseInsensitive);
-            if (zhOk && enOk)
+                              entry.name.contains(enPart, Qt::CaseInsensitive);
+            if (zhOk && enOk) {
+                AssetRowCache row;
+                row.name = entry.name;
+                row.url = entry.url;
+                row.zhName = zhName;
+                const auto iconIt = m_iconIndex.constFind(entry.name);
+                if (iconIt != m_iconIndex.cend()) {
+                    row.icon = iconIt->icon;
+                    row.tooltip = iconIt->tooltip;
+                    row.sizeHint = iconIt->sizeHint;
+                }
                 matched.push_back(row);
+            }
         }
         m_forwardModel->setRows(matched);
         if (!m_active) {
@@ -924,19 +918,19 @@ private:
         }
     }
 
-    // 搜索框激活时刷新缓存：立即构建一次；资源未加载完时延迟重试
-    // 两次（仍属于“激活时刷新”，不监听模型信号）。
-    void scheduleCacheBuild() {
-        if (m_buildTimerActive)
+    // 搜索框激活时刷新图标索引：立即构建一次；资源未加载完时延迟重试
+    // 两次（仍属于“激活时刷新”，不监听模型信号）。总是重建。
+    void scheduleIconIndexBuild() {
+        if (m_iconTimerActive)
             return;
-        m_buildTimerActive = true;
+        m_iconTimerActive = true;
         const auto attempt = [this] {
-            if (!m_buildTimerActive)
+            if (!m_iconTimerActive)
                 return;  // 已构建成功，后续重试不再重复构建。
             refreshOrigModel();
             if (m_origModel && m_origModel->rowCount() > 0) {
-                buildCache(m_origModel->rowCount());
-                m_buildTimerActive = false;
+                buildIconIndex();
+                m_iconTimerActive = false;
             }
         };
         QTimer::singleShot(0, this, attempt);
@@ -944,20 +938,25 @@ private:
         QTimer::singleShot(1500, this, attempt);
     }
 
-    void buildCache(int count) {
-        m_cache.clear();
-        m_cache.reserve(count);
+    // 从当前 model 按名字建立 图标/预览/尺寸 索引（只读轻量操作）。
+    void buildIconIndex() {
+        m_iconIndex.clear();
+        if (!m_origModel)
+            return;
+        const int count = m_origModel->rowCount();
+        m_iconIndex.reserve(count);
         for (int i = 0; i < count; ++i) {
             const QModelIndex idx = m_origModel->index(i, 0);
             if (!idx.isValid())
                 continue;
-            AssetRowCache row;
-            row.name = idx.data(Qt::DisplayRole).toString();
-            row.icon = idx.data(Qt::DecorationRole).value<QIcon>();
-            row.tooltip = idx.data(Qt::ToolTipRole).toString();
-            row.sizeHint = idx.data(Qt::SizeHintRole).toSize();
-            row.zhName = zhNameFor(row.name);
-            m_cache.push_back(row);
+            const QString name = idx.data(Qt::DisplayRole).toString();
+            if (name.isEmpty())
+                continue;
+            IconInfo info;
+            info.icon = idx.data(Qt::DecorationRole).value<QIcon>();
+            info.tooltip = idx.data(Qt::ToolTipRole).toString();
+            info.sizeHint = idx.data(Qt::SizeHintRole).toSize();
+            m_iconIndex.insert(name, info);
         }
     }
 
@@ -966,15 +965,20 @@ private:
         return zh.isEmpty() ? name : zh;
     }
 
+    struct IconInfo {
+        QIcon icon;
+        QString tooltip;
+        QSize sizeHint;
+    };
+
     QPointer<QAbstractItemView> m_view;
     QPointer<QLineEdit> m_searchField;
     QPointer<QAbstractItemModel> m_origModel;
     ForwardResourceModel *m_forwardModel = nullptr;
-    std::vector<AssetRowCache> m_cache;
-    QString m_pendingQuery;
+    QHash<QString, IconInfo> m_iconIndex;
     bool m_active = false;
     bool m_switching = false;
-    bool m_buildTimerActive = false;
+    bool m_iconTimerActive = false;
 };
 
 void ensureChineseAssetSearch(QAbstractItemView *view) {
@@ -3268,6 +3272,20 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translatio
                                                         targetString);
         g_controlTranslationsFolded[controlTypeString].insert(
             normalizeForMatch(sourceString), targetString);
+    }
+}
+
+extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_asset_catalog(
+    int count, const wchar_t *const *names, const wchar_t *const *urls) {
+    g_assetCatalog.clear();
+    for (int i = 0; i < count; ++i) {
+        AssetCatalogEntry entry;
+        entry.name = names && names[i] ? QString::fromWCharArray(names[i])
+                                       : QString();
+        entry.url = urls && urls[i] ? QString::fromWCharArray(urls[i])
+                                    : QString();
+        if (!entry.name.isEmpty() && !entry.url.isEmpty())
+            g_assetCatalog.push_back(entry);
     }
 }
 

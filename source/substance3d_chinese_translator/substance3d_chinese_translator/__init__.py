@@ -2407,7 +2407,7 @@ def _check_updates(parent=None):
             QtWidgets.QMessageBox.information(
                 parent,
                 "检查更新",
-                f"当前已是最新版本（{PLUGIN_VERSION}）。",
+                f"当前已是最新版本 v{PLUGIN_VERSION}",
             )
             return
         preview = "\n".join(

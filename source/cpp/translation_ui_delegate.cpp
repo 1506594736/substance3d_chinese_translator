@@ -1,4 +1,5 @@
 #include <QtCore/QCoreApplication>
+#include <QtCore/QAbstractItemModel>
 #include <QtCore/QDateTime>
 #include <QtCore/QEvent>
 #include <QtCore/QDir>
@@ -7,6 +8,7 @@
 #include <QtCore/QHash>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QMimeData>
 #include <QtCore/QPointer>
 #include <QtCore/QSaveFile>
 #include <QtCore/QSet>
@@ -20,6 +22,7 @@
 #include <QtGui/QKeyEvent>
 #include <QtGui/QKeySequence>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QIcon>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtGui/QAction>
 #else
@@ -66,6 +69,7 @@
 #include <intrin.h>
 
 #include <typeinfo>
+#include <utility>
 #include <vector>
 #include "extraction_rules.h"
 
@@ -721,6 +725,268 @@ int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false,
         new TranslationItemDelegate(view, compactGrid, layersPanel));
     view->viewport()->update();
     return 1;
+}
+
+// ============================================================
+// Painter 资产库中文搜索：查询含中文时，用我们自己的匹配结果
+// 替换资源列表 model（数据/拖拽/双击与原生一致），其余交还 SP。
+// ============================================================
+struct AssetRowCache {
+    QString name;       // 英文名（绘制时由翻译委托显示中文）
+    QIcon icon;         // 缩略图
+    QString tooltip;    // 富文本预览
+    QSize sizeHint;     // 图标网格尺寸
+    QByteArray uriList; // text/uri-list（拖拽 / 双击实例化）
+    QString zhName;     // 中文译名（用于中文匹配）
+};
+
+class ForwardResourceModel final : public QAbstractListModel {
+public:
+    using QAbstractListModel::QAbstractListModel;
+
+    void setRows(std::vector<AssetRowCache> rows) {
+        beginResetModel();
+        m_rows = std::move(rows);
+        endResetModel();
+    }
+
+    int rowCount(const QModelIndex &parent = QModelIndex()) const override {
+        return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
+    }
+
+    QVariant data(const QModelIndex &index, int role) const override {
+        if (!index.isValid() || index.row() < 0 ||
+            index.row() >= static_cast<int>(m_rows.size()))
+            return QVariant();
+        const AssetRowCache &row = m_rows.at(index.row());
+        switch (role) {
+        case Qt::DisplayRole:
+            return row.name;
+        case Qt::DecorationRole:
+            return QVariant::fromValue(row.icon);
+        case Qt::ToolTipRole:
+            return row.tooltip;
+        case Qt::SizeHintRole:
+            return row.sizeHint;
+        default:
+            return QVariant();
+        }
+    }
+
+    Qt::ItemFlags flags(const QModelIndex &index) const override {
+        if (!index.isValid())
+            return Qt::NoItemFlags;
+        return Qt::ItemIsSelectable | Qt::ItemIsDragEnabled |
+               Qt::ItemIsEnabled | Qt::ItemNeverHasChildren;
+    }
+
+    Qt::DropActions supportedDragActions() const override {
+        return Qt::CopyAction;
+    }
+
+    QStringList mimeTypes() const override {
+        return QStringList{QStringLiteral("text/uri-list")};
+    }
+
+    QMimeData *mimeData(const QModelIndexList &indexes) const override {
+        if (indexes.isEmpty())
+            return nullptr;
+        auto *mime = new QMimeData();
+        QByteArray all;
+        for (const QModelIndex &index : indexes) {
+            if (!index.isValid() || index.row() < 0 ||
+                index.row() >= static_cast<int>(m_rows.size()))
+                continue;
+            const QByteArray bytes = m_rows.at(index.row()).uriList;
+            if (!bytes.isEmpty())
+                all += bytes;
+        }
+        if (!all.isEmpty())
+            mime->setData(QStringLiteral("text/uri-list"), all);
+        return mime;
+    }
+
+private:
+    std::vector<AssetRowCache> m_rows;
+};
+
+class ChineseAssetSearch final : public QObject {
+public:
+    explicit ChineseAssetSearch(QAbstractItemView *view) : QObject(view) {
+        m_view = view;
+        m_origModel = view->model();
+        m_forwardModel = new ForwardResourceModel(this);
+        if (QWidget *window = view->window()) {
+            m_searchField = window->findChild<QLineEdit *>(
+                QStringLiteral("search_field"));
+        }
+        if (m_searchField) {
+            connect(m_searchField, &QLineEdit::textChanged, this,
+                    &ChineseAssetSearch::onSearchTextChanged);
+            // 缓存只在“搜索框激活（获得焦点）”时刷新：
+            // 不监听模型信号、不在输入过程中反复刷新，避免阻塞资源加载。
+            m_searchField->installEventFilter(this);
+        }
+    }
+
+    bool searchFieldFound() const { return m_searchField != nullptr; }
+
+    bool eventFilter(QObject *object, QEvent *event) override {
+        if (object == m_searchField && event->type() == QEvent::FocusIn) {
+            scheduleCacheBuild();
+        }
+        return false;
+    }
+
+private:
+    // 视图的 model 可能在挂载后才被 SP 设置：每次激活/输入时重新获取。
+    void refreshOrigModel() {
+        if (!m_view)
+            return;
+        QAbstractItemModel *model = m_view->model();
+        if (model == m_forwardModel)
+            return;  // 当前显示的是我们自己的 model：保持原 model 引用。
+        if (model != m_origModel) {
+            m_origModel = model;
+            m_cache.clear();
+        }
+    }
+
+    void onSearchTextChanged(const QString &text) {
+        if (m_switching || !m_view)
+            return;
+        refreshOrigModel();
+        if (!m_origModel)
+            return;
+        if (!containsCjk(text)) {
+            // 非中文：交还 SP 原生过滤。
+            if (m_active) {
+                m_switching = true;
+                m_view->setModel(m_origModel);
+                m_switching = false;
+                m_active = false;
+            }
+            // 有挂起的中文查询（缓存未就绪时清空恢复模型）：现在模型
+            // 已恢复全量，构建缓存并把查询放回去。
+            if (!m_pendingQuery.isEmpty() && m_origModel &&
+                m_origModel->rowCount() > 0) {
+                buildCache(m_origModel->rowCount());
+                const QString query = m_pendingQuery;
+                m_pendingQuery.clear();
+                m_switching = true;
+                m_searchField->setText(query);
+                m_switching = false;
+            }
+            return;
+        }
+        // 缓存未就绪：优先直接构建；若模型已被中文过滤成空，
+        // 先清空查询让模型恢复全量，再构建缓存并恢复查询。
+        if (m_cache.empty()) {
+            if (m_origModel && m_origModel->rowCount() > 0) {
+                buildCache(m_origModel->rowCount());
+            } else {
+                m_pendingQuery = text;
+                m_switching = true;
+                m_searchField->setText(QString());
+                m_switching = false;
+                return;
+            }
+        }
+        // 拆分中/英文片段，分别匹配中文译名与英文名（AND）。
+        QString zhPart;
+        QString enPart;
+        for (const QChar character : text) {
+            const uint code = character.unicode();
+            if ((code >= 0x3400 && code <= 0x4DBF) ||
+                (code >= 0x4E00 && code <= 0x9FFF))
+                zhPart.append(character);
+            else
+                enPart.append(character);
+        }
+        zhPart = zhPart.trimmed();
+        enPart = enPart.trimmed();
+        std::vector<AssetRowCache> matched;
+        matched.reserve(m_cache.size());
+        for (const AssetRowCache &row : m_cache) {
+            const bool zhOk = zhPart.isEmpty() ||
+                              row.zhName.contains(zhPart, Qt::CaseInsensitive);
+            const bool enOk = enPart.isEmpty() ||
+                              row.name.contains(enPart, Qt::CaseInsensitive);
+            if (zhOk && enOk)
+                matched.push_back(row);
+        }
+        m_forwardModel->setRows(matched);
+        if (!m_active) {
+            m_switching = true;
+            m_view->setModel(m_forwardModel);
+            m_switching = false;
+            m_active = true;
+        }
+    }
+
+    // 搜索框激活时刷新缓存：立即构建一次；资源未加载完时延迟重试
+    // 两次（仍属于“激活时刷新”，不监听模型信号）。
+    void scheduleCacheBuild() {
+        if (m_buildTimerActive)
+            return;
+        m_buildTimerActive = true;
+        const auto attempt = [this] {
+            if (!m_buildTimerActive)
+                return;  // 已构建成功，后续重试不再重复构建。
+            refreshOrigModel();
+            if (m_origModel && m_origModel->rowCount() > 0) {
+                buildCache(m_origModel->rowCount());
+                m_buildTimerActive = false;
+            }
+        };
+        QTimer::singleShot(0, this, attempt);
+        QTimer::singleShot(400, this, attempt);
+        QTimer::singleShot(1500, this, attempt);
+    }
+
+    void buildCache(int count) {
+        m_cache.clear();
+        m_cache.reserve(count);
+        for (int i = 0; i < count; ++i) {
+            const QModelIndex idx = m_origModel->index(i, 0);
+            if (!idx.isValid())
+                continue;
+            AssetRowCache row;
+            row.name = idx.data(Qt::DisplayRole).toString();
+            row.icon = idx.data(Qt::DecorationRole).value<QIcon>();
+            row.tooltip = idx.data(Qt::ToolTipRole).toString();
+            row.sizeHint = idx.data(Qt::SizeHintRole).toSize();
+            row.zhName = zhNameFor(row.name);
+            m_cache.push_back(row);
+        }
+    }
+
+    static QString zhNameFor(const QString &name) {
+        const QString zh = translated(name, false, QString());
+        return zh.isEmpty() ? name : zh;
+    }
+
+    QPointer<QAbstractItemView> m_view;
+    QPointer<QLineEdit> m_searchField;
+    QPointer<QAbstractItemModel> m_origModel;
+    ForwardResourceModel *m_forwardModel = nullptr;
+    std::vector<AssetRowCache> m_cache;
+    QString m_pendingQuery;
+    bool m_active = false;
+    bool m_switching = false;
+    bool m_buildTimerActive = false;
+};
+
+void ensureChineseAssetSearch(QAbstractItemView *view) {
+    if (!view)
+        return;
+    if (view->property("sp_chinese_attached").toBool())
+        return;
+    auto *search = new ChineseAssetSearch(view);
+    search->setObjectName(QStringLiteral("sp_chinese_asset_search"));
+    view->setProperty("sp_chinese_attached", 1);
+    view->setProperty("sp_chinese_search_field_found",
+                      search->searchFieldFound() ? 1 : 0);
 }
 
 bool isResourcePickerView(QAbstractItemView *view) {
@@ -1472,6 +1738,8 @@ void translateWidget(QWidget *widget) {
         const bool folderTree = isResourceFolderTree(itemView);
         if (mainResourceView || pickerView || folderTree) {
             installAssetDelegate(itemView, pickerView);
+            if (mainResourceView)
+                ensureChineseAssetSearch(itemView);
             return;
         }
     }

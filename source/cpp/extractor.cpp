@@ -34,6 +34,7 @@ using namespace extraction_rules;
 constexpr std::size_t kMaxArchiveMembers = 50000;
 constexpr std::size_t kMaxTaskExtractedMembers = 100000;
 constexpr std::size_t kMaxNestedArchives = 128;
+constexpr std::size_t kMaxSourceFiles = 250000;
 constexpr int kMaxNestedDepth = 3;
 constexpr std::size_t kMaxParsedFileBytes = 64 * 1024 * 1024;
 constexpr std::size_t kMaxDatasetBytes = 256 * 1024 * 1024;
@@ -128,7 +129,32 @@ bool safeRelative(const fs::path &path) {
     if (path.empty() || path.is_absolute() || path.has_root_name())
         return false;
     for (const auto &part : path) {
-        if (part == "..")
+        const std::wstring value = part.native();
+        if (part == "." || part == ".." || value.empty())
+            return false;
+        // Prevent NTFS alternate data streams and names that Windows silently
+        // normalizes to another path (for example "name." -> "name").
+        if (value.find_first_of(L"<>:\"|?*") != std::wstring::npos ||
+            value.back() == L'.' || value.back() == L' ')
+            return false;
+        for (const wchar_t character : value) {
+            if (character < 0x20)
+                return false;
+        }
+        std::wstring device = value.substr(0, value.find(L'.'));
+        std::transform(device.begin(), device.end(), device.begin(),
+                       [](wchar_t character) {
+                           return character >= L'a' && character <= L'z'
+                               ? static_cast<wchar_t>(character - 32)
+                               : character;
+                       });
+        const bool numberedDevice =
+            device.size() == 4 && device.back() >= L'1' &&
+            device.back() <= L'9' &&
+            (device.substr(0, 3) == L"COM" ||
+             device.substr(0, 3) == L"LPT");
+        if (device == L"CON" || device == L"PRN" || device == L"AUX" ||
+            device == L"NUL" || numberedDevice)
             return false;
     }
     return true;
@@ -446,9 +472,11 @@ void extractArchive(State &state, const fs::path &source,
             throw std::runtime_error("unsafe archive path");
         }
         const auto type = archive_entry_filetype(entry);
-        if (type == AE_IFLNK || type == AE_IFSOCK) {
+        if (archive_entry_symlink(entry) || archive_entry_hardlink(entry) ||
+            (type != AE_IFREG && type != AE_IFDIR)) {
             archive_read_free(reader);
-            throw std::runtime_error("archive links are not allowed");
+            throw std::runtime_error(
+                "archive links and special files are not allowed");
         }
         const fs::path output = destination / relative;
         if (type == AE_IFDIR) {
@@ -569,8 +597,12 @@ herr_t hdfVisitor(hid_t object, const char *name, const H5O_info2_t *info,
         const fs::path output = context->destination / relative;
         fs::create_directories(output.parent_path());
         std::ofstream file(output, std::ios::binary | std::ios::trunc);
+        if (!file)
+            throw std::runtime_error("cannot create HDF5 output file");
         file.write(reinterpret_cast<const char *>(data.data()),
                    static_cast<std::streamsize>(data.size()));
+        if (!file)
+            throw std::runtime_error("cannot write HDF5 output file");
     } catch (...) {
         context->error = std::current_exception();
         return -1;
@@ -821,6 +853,9 @@ int run(const fs::path &requestPath) {
         } else if (entry.is_regular_file() &&
                    fs::absolute(entry.path()) != fs::absolute(state.request.output)) {
             assets.push_back(entry.path());
+            if (assets.size() > kMaxSourceFiles)
+                throw std::runtime_error(
+                    "source directory contains more than 250000 files");
         }
     }
     std::sort(assets.begin(), assets.end());

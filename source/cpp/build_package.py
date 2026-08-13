@@ -28,6 +28,7 @@ named ``substance3d_chinese_translator`` under either:
 
 import ast
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -51,12 +52,28 @@ EXTRACTOR_EXE = CPP_BUILD / "Release" / "translator_extractor.exe"
 NATIVE_DIR = SRC / "native"
 DEPS_ROOT = ROOT / "sdks" / "deps"
 
+RELEASE_FILES = {
+    "__init__.py": SRC / "__init__.py",
+    "pluginInfo.json": SRC / "pluginInfo.json",
+    "README.md": README,
+    "substance3d_chinese_translator/__init__.py": MODULE_DIR / "__init__.py",
+    "native/translator_delegate_qt5.dll": NATIVE_DIR / "translator_delegate_qt5.dll",
+    "native/translator_delegate_qt6.dll": NATIVE_DIR / "translator_delegate_qt6.dll",
+    "native/translator_extractor.exe": NATIVE_DIR / "translator_extractor.exe",
+    "translations/control_ids_zh.json": TRANSLATIONS / "control_ids_zh.json",
+    "translations/my_assets_zh.json": TRANSLATIONS / "my_assets_zh.json",
+    "translations/official_assets_zh.json": TRANSLATIONS / "official_assets_zh.json",
+}
+RELEASE_FILE_ALLOWLIST = frozenset(RELEASE_FILES)
+
 
 def _check_required_files() -> None:
     required = [
         SRC / "__init__.py",
         SRC / "pluginInfo.json",
         MODULE_DIR / "__init__.py",
+        TRANSLATIONS / "control_ids_zh.json",
+        TRANSLATIONS / "my_assets_zh.json",
         TRANSLATIONS / "official_assets_zh.json",
         README,
         CPP_SRC / "CMakeLists.txt",
@@ -108,6 +125,15 @@ def _validate_sources() -> None:
     if metadata.get("name") != "substance3d_chinese_translator":
         raise ValueError(
             "pluginInfo.json 的 name 必须是 substance3d_chinese_translator"
+        )
+    version_match = re.search(
+        r'^PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']',
+        merged_text,
+        flags=re.MULTILINE,
+    )
+    if not version_match or metadata.get("version") != version_match.group(1):
+        raise ValueError(
+            "pluginInfo.json version 必须与 Python 的 PLUGIN_VERSION 一致"
         )
 
     dictionaries = sorted(TRANSLATIONS.glob("*_zh.json"))
@@ -168,7 +194,10 @@ def _build_native() -> None:
         raise RuntimeError("未找到 CMake，请先安装 CMake 并加入 PATH。")
     print("配置 C++ 原生模块……")
     subprocess.run(
-        [cmake, "-S", str(CPP_SRC), "-B", str(CPP_BUILD)],
+        [
+            cmake, "-S", str(CPP_SRC), "-B", str(CPP_BUILD),
+            "-A", "x64",
+        ],
         check=True,
     )
     print("编译 C++ 原生模块（Release）……")
@@ -207,14 +236,23 @@ def _create_archive() -> None:
     with tempfile.TemporaryDirectory(prefix="sp_pkg_") as tmp:
         pkg = Path(tmp) / "substance3d_chinese_translator"
         pkg.mkdir()
-        shutil.copy2(SRC / "__init__.py", pkg / "__init__.py")
-        shutil.copy2(SRC / "pluginInfo.json", pkg / "pluginInfo.json")
-        shutil.copy2(README, pkg / "README.md")
-        shutil.copytree(TRANSLATIONS, pkg / "translations")
-        shutil.copytree(NATIVE_DIR, pkg / "native")
-        module_pkg = pkg / "substance3d_chinese_translator"
-        module_pkg.mkdir()
-        shutil.copy2(MODULE_DIR / "__init__.py", module_pkg / "__init__.py")
+        for relative, source in RELEASE_FILES.items():
+            if not source.is_file():
+                raise RuntimeError(f"发布文件不存在: {source}")
+            destination = pkg / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+        staged_files = {
+            path.relative_to(pkg).as_posix()
+            for path in pkg.rglob("*") if path.is_file()
+        }
+        if staged_files != RELEASE_FILE_ALLOWLIST:
+            raise RuntimeError(
+                "发布暂存目录不符合白名单: "
+                f"缺少={sorted(RELEASE_FILE_ALLOWLIST - staged_files)}, "
+                f"多出={sorted(staged_files - RELEASE_FILE_ALLOWLIST)}"
+            )
 
         file_count = 0
         with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -225,20 +263,14 @@ def _create_archive() -> None:
 
     with zipfile.ZipFile(OUT, "r") as archive:
         names = archive.namelist()
-        required = {
-            "__init__.py",
-            "pluginInfo.json",
-            "README.md",
-            "substance3d_chinese_translator/__init__.py",
-            "native/translator_delegate_qt5.dll",
-            "native/translator_delegate_qt6.dll",
-            "native/translator_extractor.exe",
-            "translations/official_assets_zh.json",
-        }
-        missing = required.difference(names)
-        if missing:
+        packaged_files = {name for name in names if not name.endswith("/")}
+        if packaged_files != RELEASE_FILE_ALLOWLIST:
             OUT.unlink(missing_ok=True)
-            raise RuntimeError(f"发布包缺少必要文件: {sorted(missing)}")
+            raise RuntimeError(
+                "发布包不符合白名单: "
+                f"缺少={sorted(RELEASE_FILE_ALLOWLIST - packaged_files)}, "
+                f"多出={sorted(packaged_files - RELEASE_FILE_ALLOWLIST)}"
+            )
         if any(name.startswith("substance3d_chinese_translator/")
                and name != "substance3d_chinese_translator/__init__.py"
                for name in names):

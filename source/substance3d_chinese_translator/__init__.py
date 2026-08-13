@@ -9,6 +9,7 @@ PySide2 / Qt5 C++ 显示引擎；Designer 固定使用 Qt6 显示引擎。
 """
 
 import ctypes
+import gc
 import hashlib
 import json
 import os
@@ -472,15 +473,35 @@ MAX_UPDATE_FILES = 256
 MAX_UPDATE_FILE_BYTES = 32 * 1024 * 1024
 MAX_UPDATE_EXPANDED_BYTES = 96 * 1024 * 1024
 MAX_UPDATE_COMPRESSION_RATIO = 250
-REQUIRED_UPDATE_FILES = {
+RELEASE_FILE_ALLOWLIST = {
     "__init__.py",
     "pluginInfo.json",
+    "README.md",
     "substance3d_chinese_translator/__init__.py",
     "native/translator_delegate_qt5.dll",
     "native/translator_delegate_qt6.dll",
     "native/translator_extractor.exe",
+    "translations/control_ids_zh.json",
+    "translations/my_assets_zh.json",
     "translations/official_assets_zh.json",
 }
+REQUIRED_UPDATE_FILES = RELEASE_FILE_ALLOWLIST
+
+
+def _update_scope_id():
+    normalized = os.path.normcase(os.path.abspath(PLUGIN_DIR))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+UPDATE_SCOPE_ID = _update_scope_id()
+UPDATE_BACKUP_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+    f"Substance3DChineseTranslationBackup_{UPDATE_SCOPE_ID}",
+)
+UPDATE_RESULT_FILE = os.path.join(
+    tempfile.gettempdir(),
+    f"substance3d_update_result_{UPDATE_SCOPE_ID}.txt",
+)
 
 # Designer 没有图层面板，图层面板翻译开关仅对 Painter 生效。
 if HOST == "designer":
@@ -662,9 +683,9 @@ def load_translation_packages():
             print(f">>> 跳过无效翻译包 {name}: {exc}")
 
 
-# Native C++ delegate: Painter never calls back into Python while painting or
-# destroying the resource view. The DLL pins itself in memory until process
-# exit, so its C++ vtable remains valid throughout Qt shutdown.
+# Native C++ delegate: Painter never calls back into Python while painting.
+# On unload the C++ side removes its global filter/timer, restores every host
+# item delegate, and only then releases the DLL reference.
 _native_delegate = None
 
 
@@ -723,15 +744,11 @@ def _load_native_delegate():
         dll.sp_delegate_install.restype = ctypes.c_int
         dll.sp_delegate_install_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_install_ui.restype = ctypes.c_int
-        dll.sp_delegate_set_asset_catalog.argtypes = [
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.c_wchar_p),
-            ctypes.POINTER(ctypes.c_wchar_p),
-        ]
-        dll.sp_delegate_set_asset_catalog.restype = None
+        dll.sp_delegate_uninstall_ui.argtypes = [ctypes.c_void_p]
+        dll.sp_delegate_uninstall_ui.restype = None
         api_version = dll.sp_delegate_api_version()
-        if api_version != 11:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 11，实际 {api_version}")
+        if api_version != 12:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 12，实际 {api_version}")
             return None
         dll.sp_delegate_build_id.restype = ctypes.c_wchar_p
         dll.sp_delegate_build_id.argtypes = []
@@ -762,9 +779,8 @@ def _sync_native_dictionary():
         return False
     try:
         if HOST == "designer":
-            # A pinned DLL can survive a Python plug-in reload. Always start
-            # from an unhooked state; the saved opt-in is applied only after
-            # the UI engine has installed successfully.
+            # Always start from an unhooked state; the saved opt-in is applied
+            # only after the UI engine has installed successfully.
             dll.sp_delegate_set_translate_designer_graph(0)
         dll.sp_delegate_clear_translations()
         dll.sp_delegate_set_fallback_path(
@@ -810,89 +826,40 @@ def _install_native_ui(app):
         return False
 
 
-def _wstr_array(strings):
-    array = (ctypes.c_wchar_p * len(strings))()
-    for i, value in enumerate(strings):
-        array[i] = str(value)
-    return array
-
-
-def _resource_display_name(resource, identifier):
-    """读取资源的显示名（兼容 gui_name / ResourceID.name 两种 API）。"""
-    gui_name = getattr(resource, "gui_name", None)
-    if callable(gui_name):
-        value = gui_name()
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    value = getattr(identifier, "name", "")
-    if callable(value):
-        value = value()
-    return value.strip() if isinstance(value, str) else ""
-
-
-def _build_asset_catalog():
-    """遍历全部 shelf 构建 资源名 -> resource:// URL 的全库目录。"""
-    catalog = {}
+def _uninstall_native_ui():
+    """移除全局事件过滤器和兜底计时器，避免插件关闭后继续拦截宿主事件。"""
+    if _native_delegate is None:
+        return
+    pointer = 0
     try:
-        shelves = list(sp.resource.Shelves.all())
-    except Exception:
-        return catalog
-    for shelf in shelves:
-        try:
-            for resource in shelf.resources():
-                try:
-                    identifier = resource.identifier()
-                    name = _resource_display_name(resource, identifier)
-                    url = identifier.url() if hasattr(identifier, "url") else None
-                    if name and url and name not in catalog:
-                        catalog[name] = str(url)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    return catalog
-
-
-_asset_catalog_synced = False
-
-
-def _sync_asset_catalog():
-    """构建全库目录并传给 C++（供资产库中文搜索匹配）。"""
-    global _asset_catalog_synced
-    dll = _load_native_delegate()
-    if dll is None:
-        return False
-    catalog = _build_asset_catalog()
-    if not catalog:
-        return False  # 资源爬取可能尚未完成，稍后重试。
-    try:
-        names = list(catalog.keys())
-        urls = [catalog[name] for name in names]
-        dll.sp_delegate_set_asset_catalog(
-            len(names), _wstr_array(names), _wstr_array(urls))
-        _asset_catalog_synced = True
-        print(f">>> 资产库目录已同步: {len(names)} 个资源")
-        return True
+        app = QtWidgets.QApplication.instance()
+        if is_safe(app):
+            pointer = getCppPointer(app)[0]
+        _native_delegate.sp_delegate_uninstall_ui(
+            ctypes.c_void_p(pointer or 0)
+        )
     except Exception as exc:
-        print(">>> 资产库目录同步失败:", exc)
-        return False
+        print(">>> C++ 界面翻译引擎卸载失败:", exc)
 
 
-def _on_shelf_crawling_ended(_event):
-    """资源爬取完成事件：立即补一次目录同步。"""
-    if not _asset_catalog_synced:
-        QtCore.QTimer.singleShot(0, _sync_asset_catalog)
-
-
-def _start_asset_catalog_sync():
-    """启动后监听爬取完成并延迟重试构建全库目录。"""
-    try:
-        sp.event.DISPATCHER.connect_strong(
-            sp.event.ShelfCrawlingEnded, _on_shelf_crawling_ended)
-    except Exception:
-        pass
-    for delay in (2000, 6000, 15000, 30000):
-        QtCore.QTimer.singleShot(delay, _sync_asset_catalog)
+def _release_native_delegate():
+    """释放 Python 对 DLL 的最后引用；C++ 对象已在此前全部撤销。"""
+    global _native_delegate
+    dll = _native_delegate
+    _native_delegate = None
+    handle = getattr(dll, "_handle", 0) if dll is not None else 0
+    if handle and os.name == "nt":
+        try:
+            free_library = ctypes.windll.kernel32.FreeLibrary
+            free_library.argtypes = [ctypes.c_void_p]
+            free_library.restype = ctypes.c_int
+            if free_library(ctypes.c_void_p(handle)):
+                dll._handle = 0
+            else:
+                print(">>> 原生翻译 DLL 释放失败，将由宿主退出时回收")
+        except Exception as exc:
+            print(">>> 原生翻译 DLL 释放失败:", exc)
+    gc.collect()
 
 
 def _write_json_atomic(path, payload):
@@ -2229,6 +2196,9 @@ def _version_tuple(version):
 
 
 def _http_get_json(url, timeout=15):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "api.github.com":
+        raise RuntimeError("版本信息地址不是预期的 GitHub API。")
     request = urllib.request.Request(
         url, headers={"User-Agent": "substance3d_chinese_translator-updater"}
     )
@@ -2376,6 +2346,7 @@ def _validate_update_archive(path, expected_version=None):
         if len(infos) > MAX_UPDATE_FILES:
             raise RuntimeError("更新包文件数超过安全上限。")
         names = set()
+        file_names = set()
         folded_names = set()
         expanded = 0
         for info in infos:
@@ -2387,6 +2358,7 @@ def _validate_update_archive(path, expected_version=None):
             names.add(name)
             if info.is_dir():
                 continue
+            file_names.add(name)
             if info.flag_bits & 0x1:
                 raise RuntimeError(f"更新包含加密文件: {name}")
             if info.file_size > MAX_UPDATE_FILE_BYTES:
@@ -2398,10 +2370,15 @@ def _validate_update_archive(path, expected_version=None):
                     and info.file_size >
                     max(1, info.compress_size) * MAX_UPDATE_COMPRESSION_RATIO):
                 raise RuntimeError(f"更新包文件压缩比异常: {name}")
-        missing = REQUIRED_UPDATE_FILES.difference(names)
+        missing = REQUIRED_UPDATE_FILES.difference(file_names)
         if missing:
             raise RuntimeError(
                 f"下载的发布包缺少必要文件: {sorted(missing)}"
+            )
+        unexpected = file_names.difference(RELEASE_FILE_ALLOWLIST)
+        if unexpected:
+            raise RuntimeError(
+                f"下载的发布包包含非白名单文件: {sorted(unexpected)}"
             )
         try:
             metadata = json.loads(archive.read("pluginInfo.json").decode("utf-8-sig"))
@@ -2440,6 +2417,11 @@ def _download_update(url, destination, expected_sha256, expected_version,
     )
     digest = hashlib.sha256()
     with urllib.request.urlopen(request, timeout=15) as response:
+        final_url = urllib.parse.urlparse(response.geturl())
+        if (final_url.scheme != "https" or final_url.hostname not in {
+                "github.com", "objects.githubusercontent.com",
+                "release-assets.githubusercontent.com"}):
+            raise RuntimeError("更新下载重定向到了非 GitHub 资产地址。")
         try:
             total_bytes = int(response.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
@@ -2731,10 +2713,7 @@ def _apply_update_now(zip_path, parent=None):
         )
         return False
 
-    backup_dir = os.path.join(
-        os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
-        "Substance3DChineseTranslationBackup",
-    )
+    backup_dir = UPDATE_BACKUP_DIR
     stage_dir = None
     preserve_dir = None
     QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
@@ -2849,9 +2828,7 @@ def _apply_update_now(zip_path, parent=None):
         if not os.path.isfile(os.path.join(PLUGIN_DIR, "__init__.py")):
             raise RuntimeError("替换后插件目录缺少 __init__.py。")
 
-        result_file = os.path.join(
-            tempfile.gettempdir(), "substance3d_update_result.txt"
-        )
+        result_file = UPDATE_RESULT_FILE
         try:
             with open(result_file, "w", encoding="utf-8") as stream:
                 stream.write("true\n更新已应用，本次启动已加载新版本。")
@@ -2917,7 +2894,7 @@ def _cleanup_update_remnants():
     """Remove backups and temporary leftovers of a completed update."""
     local_app_data = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
     for name in (
-        "Substance3DChineseTranslationBackup",
+        os.path.basename(UPDATE_BACKUP_DIR),
         "Substance3DChineseTranslationUpdate",
     ):
         path = os.path.join(local_app_data, name)
@@ -2925,7 +2902,7 @@ def _cleanup_update_remnants():
             shutil.rmtree(path, ignore_errors=True)
     temp_dir = tempfile.gettempdir()
     for name in ("substance3d_apply_update.ps1",
-                 "substance3d_update_result.txt"):
+                 os.path.basename(UPDATE_RESULT_FILE)):
         try:
             os.remove(os.path.join(temp_dir, name))
         except OSError:
@@ -2949,9 +2926,7 @@ def _cleanup_update_remnants():
 
 def _notify_update_result(main_window):
     """Show the outcome of a background auto-update on the next start."""
-    result_file = os.path.join(
-        tempfile.gettempdir(), "substance3d_update_result.txt"
-    )
+    result_file = UPDATE_RESULT_FILE
     if not os.path.isfile(result_file):
         return
     message = None
@@ -3080,6 +3055,8 @@ def _teardown_engine():
     IS_CLEANING = True
     _clear_native_shortcuts()
     _disable_native_engine()
+    _uninstall_native_ui()
+    _release_native_delegate()
     _destroy_tool_dialog()
 
 
@@ -3250,7 +3227,6 @@ def start_plugin():
     _load_saved_settings()
 
     _, _, json_load_ms, native_sync_ms, native_ui_ms = _start_native_engine()
-    _start_asset_catalog_sync()
     if not IS_TRANSLATION_ENABLED:
         _set_translation_enabled(False)
 

@@ -1,5 +1,4 @@
 #include <QtCore/QCoreApplication>
-#include <QtCore/QAbstractItemModel>
 #include <QtCore/QDateTime>
 #include <QtCore/QEvent>
 #include <QtCore/QDir>
@@ -8,7 +7,6 @@
 #include <QtCore/QHash>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
-#include <QtCore/QMimeData>
 #include <QtCore/QPointer>
 #include <QtCore/QSaveFile>
 #include <QtCore/QSet>
@@ -19,10 +17,10 @@
 #include <QtGui/QHelpEvent>
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QCursor>
+#include <QtGui/QIcon>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QKeySequence>
 #include <QtGui/QMouseEvent>
-#include <QtGui/QIcon>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtGui/QAction>
 #else
@@ -33,6 +31,7 @@
 #include <QtGui/QPalette>
 #include <QtGui/QTextOption>
 #include <QtWidgets/QAbstractButton>
+#include <QtWidgets/QAbstractItemDelegate>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QAbstractScrollArea>
 #include <QtWidgets/QAbstractSlider>
@@ -69,7 +68,6 @@
 #include <intrin.h>
 
 #include <typeinfo>
-#include <utility>
 #include <vector>
 #include "extraction_rules.h"
 
@@ -703,6 +701,18 @@ private:
     QAbstractItemView *view_ = nullptr;
 };
 
+struct DelegateBinding {
+    QPointer<QAbstractItemView> view;
+    QPointer<QAbstractItemDelegate> original;
+    QPointer<TranslationItemDelegate> installed;
+    bool compactGrid = false;
+    bool originalWordWrap = false;
+    QSize originalGridSize;
+    Qt::TextElideMode originalElideMode = Qt::ElideRight;
+};
+
+std::vector<DelegateBinding> g_delegateBindings;
+
 int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false,
                          bool layersPanel = false) {
     if (!view)
@@ -711,8 +721,15 @@ int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false,
         view->viewport()->update();
         return 2;
     }
+    DelegateBinding binding;
+    binding.view = view;
+    binding.original = view->itemDelegate();
+    binding.compactGrid = compactGrid;
+    binding.originalElideMode = view->textElideMode();
     if (compactGrid) {
         if (auto *listView = qobject_cast<QListView *>(view)) {
+            binding.originalWordWrap = listView->wordWrap();
+            binding.originalGridSize = listView->gridSize();
             listView->setWordWrap(true);
             const QSize grid = listView->gridSize();
             const int extraLine = QFontMetrics(listView->font()).lineSpacing();
@@ -721,276 +738,37 @@ int installAssetDelegate(QAbstractItemView *view, bool compactGrid = false,
         }
         view->setTextElideMode(Qt::ElideRight);
     }
-    view->setItemDelegate(
-        new TranslationItemDelegate(view, compactGrid, layersPanel));
+    auto *delegate =
+        new TranslationItemDelegate(view, compactGrid, layersPanel);
+    binding.installed = delegate;
+    g_delegateBindings.push_back(binding);
+    view->setItemDelegate(delegate);
     view->viewport()->update();
     return 1;
 }
 
-// ============================================================
-// Painter 资产库中文搜索：查询含中文时，用我们自己的匹配结果
-// 替换资源列表 model（数据/拖拽/双击与原生一致），其余交还 SP。
-// ============================================================
-struct AssetRowCache {
-    QString name;       // 英文名（绘制时由翻译委托显示中文）
-    QString url;        // resource://...（拖拽 / 双击实例化）
-    QIcon icon;         // 缩略图
-    QString tooltip;    // 富文本预览
-    QSize sizeHint;     // 图标网格尺寸
-    QString zhName;     // 中文译名（用于中文匹配）
-};
-
-// Python 侧构建的全库资源目录（name -> resource:// url），
-// 作为中文搜索的匹配数据源，不依赖资源视图当前分类。
-struct AssetCatalogEntry {
-    QString name;
-    QString url;
-};
-std::vector<AssetCatalogEntry> g_assetCatalog;
-
-class ForwardResourceModel final : public QAbstractListModel {
-public:
-    using QAbstractListModel::QAbstractListModel;
-
-    void setRows(std::vector<AssetRowCache> rows) {
-        beginResetModel();
-        m_rows = std::move(rows);
-        endResetModel();
-    }
-
-    int rowCount(const QModelIndex &parent = QModelIndex()) const override {
-        return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
-    }
-
-    QVariant data(const QModelIndex &index, int role) const override {
-        if (!index.isValid() || index.row() < 0 ||
-            index.row() >= static_cast<int>(m_rows.size()))
-            return QVariant();
-        const AssetRowCache &row = m_rows.at(index.row());
-        switch (role) {
-        case Qt::DisplayRole:
-            return row.name;
-        case Qt::DecorationRole:
-            return QVariant::fromValue(row.icon);
-        case Qt::ToolTipRole:
-            return row.tooltip;
-        case Qt::SizeHintRole:
-            return row.sizeHint;
-        default:
-            return QVariant();
-        }
-    }
-
-    Qt::ItemFlags flags(const QModelIndex &index) const override {
-        if (!index.isValid())
-            return Qt::NoItemFlags;
-        return Qt::ItemIsSelectable | Qt::ItemIsDragEnabled |
-               Qt::ItemIsEnabled | Qt::ItemNeverHasChildren;
-    }
-
-    Qt::DropActions supportedDragActions() const override {
-        return Qt::CopyAction;
-    }
-
-    QStringList mimeTypes() const override {
-        return QStringList{QStringLiteral("text/uri-list")};
-    }
-
-    QMimeData *mimeData(const QModelIndexList &indexes) const override {
-        if (indexes.isEmpty())
-            return nullptr;
-        auto *mime = new QMimeData();
-        QByteArray all;
-        for (const QModelIndex &index : indexes) {
-            if (!index.isValid() || index.row() < 0 ||
-                index.row() >= static_cast<int>(m_rows.size()))
-                continue;
-            const QString url = m_rows.at(index.row()).url;
-            if (!url.isEmpty())
-                all += url.toUtf8() + "\r\n";
-        }
-        if (!all.isEmpty())
-            mime->setData(QStringLiteral("text/uri-list"), all);
-        return mime;
-    }
-
-private:
-    std::vector<AssetRowCache> m_rows;
-};
-
-class ChineseAssetSearch final : public QObject {
-public:
-    explicit ChineseAssetSearch(QAbstractItemView *view) : QObject(view) {
-        m_view = view;
-        m_origModel = view->model();
-        m_forwardModel = new ForwardResourceModel(this);
-        if (QWidget *window = view->window()) {
-            m_searchField = window->findChild<QLineEdit *>(
-                QStringLiteral("search_field"));
-        }
-        if (m_searchField) {
-            connect(m_searchField, &QLineEdit::textChanged, this,
-                    &ChineseAssetSearch::onSearchTextChanged);
-            // 图标索引只在“搜索框激活（获得焦点）”时刷新；
-            // 全库目录由 Python 构建，不监听模型信号、不在输入中刷新。
-            m_searchField->installEventFilter(this);
-        }
-    }
-
-    bool searchFieldFound() const { return m_searchField != nullptr; }
-
-    bool eventFilter(QObject *object, QEvent *event) override {
-        if (object == m_searchField && event->type() == QEvent::FocusIn) {
-            scheduleIconIndexBuild();
-        }
-        return false;
-    }
-
-private:
-    // 视图的 model 可能在挂载后才被 SP 设置：每次激活/输入时重新获取。
-    void refreshOrigModel() {
-        if (!m_view)
-            return;
-        QAbstractItemModel *model = m_view->model();
-        if (model == m_forwardModel)
-            return;  // 当前显示的是我们自己的 model：保持原 model 引用。
-        if (model != m_origModel) {
-            m_origModel = model;
-            m_iconIndex.clear();
-        }
-    }
-
-    void onSearchTextChanged(const QString &text) {
-        if (m_switching || !m_view)
-            return;
-        refreshOrigModel();
-        if (!containsCjk(text)) {
-            // 非中文：交还 SP 原生过滤。
-            if (m_active) {
-                m_switching = true;
-                m_view->setModel(m_origModel);
-                m_switching = false;
-                m_active = false;
-            }
-            return;
-        }
-        // 拆分中/英文片段，分别匹配中文译名与英文名（AND）。
-        QString zhPart;
-        QString enPart;
-        for (const QChar character : text) {
-            const uint code = character.unicode();
-            if ((code >= 0x3400 && code <= 0x4DBF) ||
-                (code >= 0x4E00 && code <= 0x9FFF))
-                zhPart.append(character);
-            else
-                enPart.append(character);
-        }
-        zhPart = zhPart.trimmed();
-        enPart = enPart.trimmed();
-        std::vector<AssetRowCache> matched;
-        matched.reserve(g_assetCatalog.size());
-        for (const AssetCatalogEntry &entry : g_assetCatalog) {
-            const QString zhName = zhNameFor(entry.name);
-            const bool zhOk = zhPart.isEmpty() ||
-                              zhName.contains(zhPart, Qt::CaseInsensitive);
-            const bool enOk = enPart.isEmpty() ||
-                              entry.name.contains(enPart, Qt::CaseInsensitive);
-            if (zhOk && enOk) {
-                AssetRowCache row;
-                row.name = entry.name;
-                row.url = entry.url;
-                row.zhName = zhName;
-                const auto iconIt = m_iconIndex.constFind(entry.name);
-                if (iconIt != m_iconIndex.cend()) {
-                    row.icon = iconIt->icon;
-                    row.tooltip = iconIt->tooltip;
-                    row.sizeHint = iconIt->sizeHint;
+void restoreAssetDelegates() {
+    for (auto it = g_delegateBindings.rbegin();
+         it != g_delegateBindings.rend(); ++it) {
+        QAbstractItemView *view = it->view.data();
+        TranslationItemDelegate *installed = it->installed.data();
+        if (view) {
+            const bool stillInstalled = view->itemDelegate() == installed;
+            if (stillInstalled)
+                view->setItemDelegate(it->original.data());
+            if (stillInstalled && it->compactGrid) {
+                if (auto *listView = qobject_cast<QListView *>(view)) {
+                    listView->setWordWrap(it->originalWordWrap);
+                    listView->setGridSize(it->originalGridSize);
                 }
-                matched.push_back(row);
+                view->setTextElideMode(it->originalElideMode);
             }
+            if (view->viewport())
+                view->viewport()->update();
         }
-        m_forwardModel->setRows(matched);
-        if (!m_active) {
-            m_switching = true;
-            m_view->setModel(m_forwardModel);
-            m_switching = false;
-            m_active = true;
-        }
+        delete installed;
     }
-
-    // 搜索框激活时刷新图标索引：立即构建一次；资源未加载完时延迟重试
-    // 两次（仍属于“激活时刷新”，不监听模型信号）。总是重建。
-    void scheduleIconIndexBuild() {
-        if (m_iconTimerActive)
-            return;
-        m_iconTimerActive = true;
-        const auto attempt = [this] {
-            if (!m_iconTimerActive)
-                return;  // 已构建成功，后续重试不再重复构建。
-            refreshOrigModel();
-            if (m_origModel && m_origModel->rowCount() > 0) {
-                buildIconIndex();
-                m_iconTimerActive = false;
-            }
-        };
-        QTimer::singleShot(0, this, attempt);
-        QTimer::singleShot(400, this, attempt);
-        QTimer::singleShot(1500, this, attempt);
-    }
-
-    // 从当前 model 按名字建立 图标/预览/尺寸 索引（只读轻量操作）。
-    void buildIconIndex() {
-        m_iconIndex.clear();
-        if (!m_origModel)
-            return;
-        const int count = m_origModel->rowCount();
-        m_iconIndex.reserve(count);
-        for (int i = 0; i < count; ++i) {
-            const QModelIndex idx = m_origModel->index(i, 0);
-            if (!idx.isValid())
-                continue;
-            const QString name = idx.data(Qt::DisplayRole).toString();
-            if (name.isEmpty())
-                continue;
-            IconInfo info;
-            info.icon = idx.data(Qt::DecorationRole).value<QIcon>();
-            info.tooltip = idx.data(Qt::ToolTipRole).toString();
-            info.sizeHint = idx.data(Qt::SizeHintRole).toSize();
-            m_iconIndex.insert(name, info);
-        }
-    }
-
-    static QString zhNameFor(const QString &name) {
-        const QString zh = translated(name, false, QString());
-        return zh.isEmpty() ? name : zh;
-    }
-
-    struct IconInfo {
-        QIcon icon;
-        QString tooltip;
-        QSize sizeHint;
-    };
-
-    QPointer<QAbstractItemView> m_view;
-    QPointer<QLineEdit> m_searchField;
-    QPointer<QAbstractItemModel> m_origModel;
-    ForwardResourceModel *m_forwardModel = nullptr;
-    QHash<QString, IconInfo> m_iconIndex;
-    bool m_active = false;
-    bool m_switching = false;
-    bool m_iconTimerActive = false;
-};
-
-void ensureChineseAssetSearch(QAbstractItemView *view) {
-    if (!view)
-        return;
-    if (view->property("sp_chinese_attached").toBool())
-        return;
-    auto *search = new ChineseAssetSearch(view);
-    search->setObjectName(QStringLiteral("sp_chinese_asset_search"));
-    view->setProperty("sp_chinese_attached", 1);
-    view->setProperty("sp_chinese_search_field_found",
-                      search->searchFieldFound() ? 1 : 0);
+    g_delegateBindings.clear();
 }
 
 bool isResourcePickerView(QAbstractItemView *view) {
@@ -1742,8 +1520,6 @@ void translateWidget(QWidget *widget) {
         const bool folderTree = isResourceFolderTree(itemView);
         if (mainResourceView || pickerView || folderTree) {
             installAssetDelegate(itemView, pickerView);
-            if (mainResourceView)
-                ensureChineseAssetSearch(itemView);
             return;
         }
     }
@@ -2820,7 +2596,7 @@ protected:
                     g_enableShortcutArmed = 0;
                     shortcutDiag(QStringLiteral("KR0 real key=%1")
                                      .arg(keyEvent->key()));
-                    QTimer::singleShot(0, qApp, [] { fireShortcut(0); });
+                    QTimer::singleShot(0, this, [] { fireShortcut(0); });
                 }
             }
             if (g_editKeyShortcutArmed != 0 &&
@@ -2832,7 +2608,7 @@ protected:
                     g_editKeyShortcutArmed = 0;
                     shortcutDiag(QStringLiteral("KR1 real key=%1")
                                      .arg(keyEvent->key()));
-                    QTimer::singleShot(0, qApp, [] { fireShortcut(1); });
+                    QTimer::singleShot(0, this, [] { fireShortcut(1); });
                 }
             }
             return false;
@@ -2873,7 +2649,7 @@ protected:
                     const QString panelName = controlPanelName(menu);
                     QPointer<QWidget> safeWindow(menu->window());
                     QTimer::singleShot(
-                        0, qApp,
+                        0, this,
                         [source, uniqueId, panelName, safeWindow]() {
                         QWidget *parent = safeWindow.data();
                         if (!parent)
@@ -2903,7 +2679,7 @@ protected:
                         const QString panelName = controlPanelName(widget);
                         QPointer<QWidget> safeWidget(widget);
                         QTimer::singleShot(
-                            0, qApp,
+                            0, this,
                             [source, uniqueId, panelName, safeWidget]() {
                             QWidget *parent = safeWidget
                                 ? safeWidget->window()
@@ -2943,7 +2719,7 @@ protected:
                         const QString panelName = controlPanelName(widget);
                         QPointer<QWidget> safeWidget(widget);
                         QTimer::singleShot(
-                            0, qApp,
+                            0, this,
                             [source, uniqueId, panelName, safeWidget]() {
                             if (safeWidget)
                                 editTranslation(source, uniqueId, panelName,
@@ -2975,7 +2751,7 @@ protected:
             const QString panelName = controlPanelName(widget);
             QPointer<QWidget> safeWidget(widget);
             QTimer::singleShot(
-                0, qApp,
+                0, this,
                 [source, uniqueId, panelName, safeWidget]() {
                 if (safeWidget)
                     editTranslation(source, uniqueId, panelName,
@@ -3049,19 +2825,13 @@ void scanVisibleWidgets() {
     }
 }
 
-bool pinThisDll() {
-    HMODULE module = nullptr;
-    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                 GET_MODULE_HANDLE_EX_FLAG_PIN,
-                             reinterpret_cast<LPCWSTR>(&pinThisDll), &module) != 0;
-}
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 11; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 12; }
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
     // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
-    return L"20260811-ctrl-mouse-text-match";
+    return L"20260813-clean-lifecycle";
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
@@ -3275,20 +3045,6 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translatio
     }
 }
 
-extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_asset_catalog(
-    int count, const wchar_t *const *names, const wchar_t *const *urls) {
-    g_assetCatalog.clear();
-    for (int i = 0; i < count; ++i) {
-        AssetCatalogEntry entry;
-        entry.name = names && names[i] ? QString::fromWCharArray(names[i])
-                                       : QString();
-        entry.url = urls && urls[i] ? QString::fromWCharArray(urls[i])
-                                    : QString();
-        if (!entry.name.isEmpty() && !entry.url.isEmpty())
-            g_assetCatalog.push_back(entry);
-    }
-}
-
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_id_translation(
     const wchar_t *id, const wchar_t *target) {
     if (id && target) {
@@ -3303,14 +3059,10 @@ sp_delegate_set_translate_layers(int enabled) {
 }
 
 extern "C" __declspec(dllexport) int __cdecl sp_delegate_install(void *viewPointer) {
-    if (!pinThisDll())
-        return 0;
     return installAssetDelegate(static_cast<QAbstractItemView *>(viewPointer));
 }
 
 extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applicationPointer) {
-    if (!pinThisDll())
-        return 0;
     auto *application = static_cast<QApplication *>(applicationPointer);
     if (!application)
         application = qobject_cast<QApplication *>(QCoreApplication::instance());
@@ -3343,4 +3095,24 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
     }
     scanVisibleWidgets();
     return 1;
+}
+
+extern "C" __declspec(dllexport) void __cdecl
+sp_delegate_uninstall_ui(void *applicationPointer) {
+    auto *application = static_cast<QApplication *>(applicationPointer);
+    if (!application)
+        application = qobject_cast<QApplication *>(QCoreApplication::instance());
+
+    if (g_filter && application)
+        application->removeEventFilter(g_filter);
+    if (g_fallbackTimer) {
+        g_fallbackTimer->stop();
+        delete g_fallbackTimer;
+        g_fallbackTimer = nullptr;
+    }
+    if (g_filter) {
+        delete g_filter;
+        g_filter = nullptr;
+    }
+    restoreAssetDelegates();
 }

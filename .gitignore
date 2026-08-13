@@ -15,7 +15,6 @@
 *.so
 *.dylib
 *.dll
-!source/substance3d_chinese_translator/native/*.dll
 
 # Fortran module files
 *.mod
@@ -28,7 +27,6 @@
 
 # Executables
 *.exe
-!source/substance3d_chinese_translator/native/translator_extractor.exe
 *.out
 *.app
 
@@ -37,6 +35,8 @@ __pycache__/
 *.pyc
 
 # CMake build outputs
+source/cpp/build/
+source/cpp/build_old/
 source/substance3d_chinese_translator/cpp/build/
 source/substance3d_chinese_translator/cpp/build_old/
 build_tools/

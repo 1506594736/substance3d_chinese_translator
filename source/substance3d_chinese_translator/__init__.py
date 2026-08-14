@@ -486,6 +486,12 @@ RELEASE_FILE_ALLOWLIST = {
     "translations/official_assets_zh.json",
 }
 REQUIRED_UPDATE_FILES = RELEASE_FILE_ALLOWLIST
+RELEASE_TRANSLATION_NAMES = {
+    os.path.basename(path).casefold()
+    for path in RELEASE_FILE_ALLOWLIST
+    if path.casefold().startswith("translations/")
+    and path.casefold().endswith(".json")
+}
 
 
 def _update_scope_id():
@@ -2657,53 +2663,14 @@ def _cleanup_pending_native_files():
         pass
 
 
-def _merge_preserved_translation(old_path, new_path):
-    """Merge locally saved translations over a newly shipped dictionary."""
-    with open(old_path, "r", encoding="utf-8-sig") as stream:
-        old_payload = json.load(stream)
-    with open(new_path, "r", encoding="utf-8-sig") as stream:
-        new_payload = json.load(stream)
-    for payload in (old_payload, new_payload):
-        if (not isinstance(payload, dict)
-                or payload.get("$schema") != "sp-translation-v1"
-                or payload.get("language") != "zh-CN"):
-            raise ValueError("词库格式或语言无效")
-    old_entries = old_payload.get("translations", {})
-    new_entries = new_payload.get("translations", {})
-    if not isinstance(old_entries, dict) or not isinstance(new_entries, dict):
-        raise ValueError("词库 translations 必须是对象")
-    new_entries.update(old_entries)
-    new_payload["translations"] = new_entries
-
-    old_controls = old_payload.get("control_types", {})
-    new_controls = new_payload.get("control_types", {})
-    if not isinstance(old_controls, dict) or not isinstance(new_controls, dict):
-        raise ValueError("词库 control_types 必须是对象")
-    for control_type, old_section in old_controls.items():
-        if (not isinstance(old_section, dict)
-                or not isinstance(old_section.get("translations"), dict)):
-            raise ValueError(f"旧词库控件分区无效: {control_type}")
-        new_section = new_controls.setdefault(
-            control_type, {"translations": {}}
-        )
-        if not isinstance(new_section, dict):
-            raise ValueError(f"新词库控件分区无效: {control_type}")
-        new_scoped = new_section.setdefault("translations", {})
-        if not isinstance(new_scoped, dict):
-            raise ValueError(f"新词库控件词条无效: {control_type}")
-        new_scoped.update(old_section["translations"])
-    if new_controls:
-        new_payload["control_types"] = new_controls
-    _write_json_atomic(new_path, new_payload)
-
-
 def _apply_update_now(zip_path, parent=None):
     """Apply a downloaded release package in place, without closing the host.
 
     The old plug-in directory is backed up, every file shipped by the new
     package is copied over it (a loaded native DLL is renamed aside first),
-    and the user's own translation JSON files are preserved. The host is left
-    running; the new code and DLL only take effect after a restart.
+    and standalone user translation JSON files are preserved. Dictionaries
+    shipped by the release are replaced exactly by the release copies. The
+    host is left running; the new code and DLL only take effect after a restart.
     """
     if not os.path.isfile(zip_path):
         QtWidgets.QMessageBox.warning(
@@ -2762,12 +2729,14 @@ def _apply_update_now(zip_path, parent=None):
             shutil.rmtree(backup_dir, ignore_errors=True)
         shutil.copytree(PLUGIN_DIR, backup_dir)
 
-        # Preserve the user's own translation JSON files.
+        # Preserve standalone user dictionaries. Release-owned dictionaries
+        # are intentionally excluded so updates replace them exactly.
         preserve_dir = tempfile.mkdtemp(prefix="sp_update_preserve_")
         old_translations = os.path.join(PLUGIN_DIR, "translations")
         if os.path.isdir(old_translations):
             for name in os.listdir(old_translations):
-                if name.lower().endswith(".json"):
+                if (name.lower().endswith(".json")
+                        and name.casefold() not in RELEASE_TRANSLATION_NAMES):
                     shutil.copy2(
                         os.path.join(old_translations, name),
                         os.path.join(preserve_dir, name),
@@ -2813,17 +2782,14 @@ def _apply_update_now(zip_path, parent=None):
             except OSError:
                 pass
 
-        # Restore standalone user dictionaries and merge locally changed
-        # entries over dictionaries that are also shipped by the new release.
+        # Restore standalone user dictionaries unchanged. Release-owned
+        # dictionaries remain the exact files copied from the update package.
         new_translations = os.path.join(PLUGIN_DIR, "translations")
         os.makedirs(new_translations, exist_ok=True)
         for name in os.listdir(preserve_dir):
             target = os.path.join(new_translations, name)
             preserved = os.path.join(preserve_dir, name)
-            if os.path.isfile(target):
-                _merge_preserved_translation(preserved, target)
-            else:
-                shutil.copy2(preserved, target)
+            shutil.copy2(preserved, target)
 
         if not os.path.isfile(os.path.join(PLUGIN_DIR, "__init__.py")):
             raise RuntimeError("替换后插件目录缺少 __init__.py。")

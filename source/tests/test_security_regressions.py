@@ -1,6 +1,7 @@
 import ast
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -29,6 +30,7 @@ def _load_update_validation_namespace():
         "PLUGIN_VERSION", "MAX_UPDATE_FILES", "MAX_UPDATE_FILE_BYTES",
         "MAX_UPDATE_EXPANDED_BYTES", "MAX_UPDATE_COMPRESSION_RATIO",
         "RELEASE_FILE_ALLOWLIST", "REQUIRED_UPDATE_FILES",
+        "RELEASE_TRANSLATION_NAMES",
     }
     wanted_functions = {"_normalized_zip_name", "_validate_update_archive"}
     selected = []
@@ -41,7 +43,7 @@ def _load_update_validation_namespace():
         elif (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
               and node.name in wanted_functions):
             selected.append(node)
-    namespace = {"json": json, "zipfile": zipfile}
+    namespace = {"json": json, "os": os, "zipfile": zipfile}
     exec(compile(ast.Module(body=selected, type_ignores=[]),
                  str(MODULE_SOURCE), "exec"), namespace)
     return namespace
@@ -84,6 +86,31 @@ class SecurityRegressionTests(unittest.TestCase):
                 version = ast.literal_eval(node.value)
                 break
         self.assertEqual(metadata["version"], version)
+
+    def test_update_replaces_release_dictionaries_and_preserves_custom_ones(self):
+        namespace = _load_update_validation_namespace()
+        self.assertEqual(
+            namespace["RELEASE_TRANSLATION_NAMES"],
+            {
+                "control_ids_zh.json",
+                "my_assets_zh.json",
+                "official_assets_zh.json",
+            },
+        )
+        source = MODULE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        apply_update = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_apply_update_now"
+        )
+        apply_source = ast.get_source_segment(source, apply_update)
+        self.assertIn(
+            "name.casefold() not in RELEASE_TRANSLATION_NAMES",
+            apply_source,
+        )
+        self.assertIn("shutil.copy2(preserved, target)", apply_source)
+        self.assertNotIn("_merge_preserved_translation", source)
 
     def test_no_zbrush_connector_code_in_plugin_sources(self):
         forbidden = [

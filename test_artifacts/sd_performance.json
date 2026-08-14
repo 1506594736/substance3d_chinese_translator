@@ -1,0 +1,235 @@
+{
+  "host": "designer",
+  "qt": 6,
+  "round_count": 12,
+  "rounds": [
+    {
+      "round": 1,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.563600010238588,
+        "timed_out": false,
+        "set_text_ms": 3.558599972166121
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 51.430299994535744,
+        "timed_out": false,
+        "set_text_ms": 5.112900049425662
+      }
+    },
+    {
+      "round": 2,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.600300056859851,
+        "timed_out": false,
+        "set_text_ms": 3.594700014218688
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 54.593299981206656,
+        "timed_out": false,
+        "set_text_ms": 5.3140000673010945
+      }
+    },
+    {
+      "round": 3,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.5792000126093626,
+        "timed_out": false,
+        "set_text_ms": 3.5741999745368958
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 52.9551999643445,
+        "timed_out": false,
+        "set_text_ms": 5.263900035060942
+      }
+    },
+    {
+      "round": 4,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.348700003698468,
+        "timed_out": false,
+        "set_text_ms": 3.344199969433248
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 40.80479999538511,
+        "timed_out": false,
+        "set_text_ms": 5.168200004845858
+      }
+    },
+    {
+      "round": 5,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.349000005982816,
+        "timed_out": false,
+        "set_text_ms": 3.3448999747633934
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 43.733300059102476,
+        "timed_out": false,
+        "set_text_ms": 5.955100059509277
+      }
+    },
+    {
+      "round": 6,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.3327999990433455,
+        "timed_out": false,
+        "set_text_ms": 3.328500082716346
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 42.02640010043979,
+        "timed_out": false,
+        "set_text_ms": 5.457799998112023
+      }
+    },
+    {
+      "round": 7,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.263499937020242,
+        "timed_out": false,
+        "set_text_ms": 3.2598000252619386
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 46.16809997241944,
+        "timed_out": false,
+        "set_text_ms": 5.342799937352538
+      }
+    },
+    {
+      "round": 8,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.3901999704539776,
+        "timed_out": false,
+        "set_text_ms": 3.386499942280352
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 45.12389993760735,
+        "timed_out": false,
+        "set_text_ms": 5.4614999098703265
+      }
+    },
+    {
+      "round": 9,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.3325999975204468,
+        "timed_out": false,
+        "set_text_ms": 3.3288999693468213
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 48.79110003821552,
+        "timed_out": false,
+        "set_text_ms": 5.669399979524314
+      }
+    },
+    {
+      "round": 10,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.5466999979689717,
+        "timed_out": false,
+        "set_text_ms": 3.5428000846877694
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 50.308699952438474,
+        "timed_out": false,
+        "set_text_ms": 5.795500008389354
+      }
+    },
+    {
+      "round": 11,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.62700002733618,
+        "timed_out": false,
+        "set_text_ms": 3.6240000044927
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 50.77999993227422,
+        "timed_out": false,
+        "set_text_ms": 5.723699927330017
+      }
+    },
+    {
+      "round": 12,
+      "english": {
+        "rows": 3,
+        "hidden": 0,
+        "visible": 3,
+        "latency_ms": 3.3137999707832932,
+        "timed_out": false,
+        "set_text_ms": 3.310999949462712
+      },
+      "chinese": {
+        "rows": 1000,
+        "hidden": 998,
+        "visible": 2,
+        "latency_ms": 46.61270009819418,
+        "timed_out": false,
+        "set_text_ms": 6.060400046408176
+      }
+    }
+  ]
+}

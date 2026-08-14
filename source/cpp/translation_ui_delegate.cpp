@@ -10,6 +10,7 @@
 #include <QtCore/QPointer>
 #include <QtCore/QSaveFile>
 #include <QtCore/QSet>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QStringList>
 #include <QtCore/QTextStream>
 #include <QtCore/QTimer>
@@ -771,6 +772,329 @@ void restoreAssetDelegates() {
     g_delegateBindings.clear();
 }
 
+// Painter 11 does not expose a QSortFilterProxyModel for the main Assets
+// list.  The search field updates Alg::NewResourceListModel through Painter's
+// private resource database, whose labels and tags are read-only from the
+// public plug-in API.  Keep that native model installed and, for CJK queries,
+// ask Painter for the complete current category before hiding non-matching
+// rows in the native QListView.  This preserves Painter-owned QModelIndex,
+// drag/drop, activation and selection semantics and needs no reverse
+// Chinese-to-English dictionary.
+class PainterAssetRowFilter final : public QObject {
+public:
+    explicit PainterAssetRowFilter(QObject *parent = nullptr)
+        : QObject(parent), timer_(new QTimer(this)) {
+        timer_->setSingleShot(true);
+        timer_->setInterval(40);
+        QObject::connect(timer_, &QTimer::timeout, this,
+                         [this] { applyFilter(); });
+    }
+
+    void observe(QWidget *widget) {
+        QWidget *container = resourcesContainer(widget);
+        if (!container)
+            return;
+        bindContainer(container);
+    }
+
+    void setActive(bool active) {
+        active_ = active;
+        if (!active_) {
+            deactivateLocalQuery(true);
+            return;
+        }
+        if (field_ && containsCjk(field_->text()))
+            activateLocalQuery(field_->text());
+    }
+
+    void translationsChanged() {
+        if (localQuery_)
+            scheduleFilter();
+    }
+
+    void shutdown() {
+        active_ = false;
+        unbind(true);
+    }
+
+private:
+    static QString className(const QObject *object) {
+        return object
+                   ? QString::fromLatin1(object->metaObject()->className())
+                   : QString();
+    }
+
+    static QWidget *resourcesContainer(QWidget *widget) {
+        int depth = 0;
+        for (QObject *current = widget; current && depth < 14;
+             current = current->parent(), ++depth) {
+            if (className(current) == QStringLiteral("Alg::NewResourcesView"))
+                return qobject_cast<QWidget *>(current);
+        }
+        return nullptr;
+    }
+
+    static bool isMainAssetView(QListView *view, QWidget *container) {
+        if (!view || !container || view->objectName() != QStringLiteral("resources") ||
+            className(view) != QStringLiteral("Alg::ResourceListView") ||
+            resourcesContainer(view) != container || !view->model())
+            return false;
+        return className(view->model()) ==
+               QStringLiteral("Alg::NewResourceListModel");
+    }
+
+    static bool isAssetSearchField(QLineEdit *field, QWidget *container) {
+        return field && container &&
+               field->objectName() == QStringLiteral("search_field") &&
+               className(field) == QStringLiteral("Alg::SearchFieldLineEdit") &&
+               resourcesContainer(field) == container;
+    }
+
+    void bindContainer(QWidget *container) {
+        if (!container)
+            return;
+
+        QLineEdit *field = nullptr;
+        const QList<QLineEdit *> fields = container->findChildren<QLineEdit *>();
+        for (QLineEdit *candidate : fields) {
+            if (isAssetSearchField(candidate, container)) {
+                field = candidate;
+                break;
+            }
+        }
+
+        QListView *view = nullptr;
+        const QList<QListView *> views = container->findChildren<QListView *>();
+        for (QListView *candidate : views) {
+            if (isMainAssetView(candidate, container)) {
+                view = candidate;
+                break;
+            }
+        }
+
+        if (!field || !view || !view->model())
+            return;
+        if (field_ == field && view_ == view && model_ == view->model())
+            return;
+
+        unbind(true);
+        container_ = container;
+        field_ = field;
+        view_ = view;
+        model_ = view->model();
+
+        fieldConnection_ = QObject::connect(
+            field, &QLineEdit::textChanged, this,
+            [this](const QString &query) { onTextChanged(query); });
+        connectModel();
+
+        if (active_ && containsCjk(field_->text()))
+            activateLocalQuery(field_->text());
+    }
+
+    void connectModel() {
+        if (!model_)
+            return;
+        modelConnections_.push_back(QObject::connect(
+            model_, &QAbstractItemModel::modelReset, this,
+            [this] { scheduleFilter(); }));
+        modelConnections_.push_back(QObject::connect(
+            model_, &QAbstractItemModel::rowsInserted, this,
+            [this](const QModelIndex &, int, int) { scheduleFilter(); }));
+        modelConnections_.push_back(QObject::connect(
+            model_, &QAbstractItemModel::rowsRemoved, this,
+            [this](const QModelIndex &, int, int) { scheduleFilter(); }));
+        modelConnections_.push_back(QObject::connect(
+            model_, &QAbstractItemModel::layoutChanged, this,
+            [this] { scheduleFilter(); }));
+    }
+
+    void disconnectModel() {
+        for (const QMetaObject::Connection &connection : modelConnections_)
+            QObject::disconnect(connection);
+        modelConnections_.clear();
+    }
+
+    void onTextChanged(const QString &query) {
+        if (applying_ || !active_ || !field_ || !view_)
+            return;
+        if (containsCjk(query)) {
+            activateLocalQuery(query);
+        } else {
+            // Painter has already received this text change. Remove the local
+            // row mask and leave the English/empty query entirely native.
+            deactivateLocalQuery(false);
+        }
+    }
+
+    void activateLocalQuery(const QString &query) {
+        if (!active_ || applying_ || !field_ || !view_ || !model_ ||
+            field_->signalsBlocked())
+            return;
+
+        const QString visibleQuery = query;
+        const int cursor = field_->cursorPosition();
+        const int selectionStart = field_->selectionStart();
+        const int selectionLength = field_->selectedText().size();
+
+        applying_ = true;
+        localQuery_ = true;
+        query_ = visibleQuery.trimmed();
+
+        // Signals stay enabled here: Painter receives an empty text query and
+        // repopulates the original model with every resource in the currently
+        // selected native category. setText() emits textChanged(), but the
+        // applying_ guard above prevents recursion into this handler.
+        field_->setText(QString());
+
+        // Restore the user's CJK text only for presentation. QSignalBlocker
+        // restores the previous signal state even if Qt code throws/returns.
+        {
+            const QSignalBlocker blocker(field_);
+            field_->setText(visibleQuery);
+            if (selectionStart >= 0) {
+                const int start = qMin(selectionStart, visibleQuery.size());
+                const int length = qMin(selectionLength,
+                                        visibleQuery.size() - start);
+                field_->setSelection(start, qMax(0, length));
+            } else {
+                field_->setCursorPosition(qMin(cursor, visibleQuery.size()));
+            }
+        }
+        applying_ = false;
+        scheduleFilter();
+    }
+
+    void deactivateLocalQuery(bool restoreNative) {
+        if (timer_)
+            timer_->stop();
+        const bool wasLocal = localQuery_;
+        localQuery_ = false;
+        query_.clear();
+        clearHiddenRows();
+        if (restoreNative && wasLocal)
+            restoreNativeQuery();
+    }
+
+    void restoreNativeQuery() {
+        if (!field_ || appClosingDown())
+            return;
+        // The visible string was restored while signals were blocked. Emit
+        // Painter's normal notification once so disabling/unloading the plug-in
+        // cannot leave a hidden empty query behind the visible CJK text.
+        QMetaObject::invokeMethod(field_, "textChanged", Qt::DirectConnection,
+                                  Q_ARG(QString, field_->text()));
+    }
+
+    void scheduleFilter() {
+        if (!active_ || !localQuery_ || !timer_)
+            return;
+        timer_->start();
+    }
+
+    QStringList normalizedTerms() const {
+        QStringList terms;
+        const QStringList raw =
+            query_.simplified().split(QLatin1Char(' '));
+        for (const QString &term : raw) {
+            const QString normalized = normalizeForMatch(term);
+            if (!normalized.isEmpty())
+                terms.push_back(normalized);
+        }
+        return terms;
+    }
+
+    void applyFilter() {
+        if (!active_ || !localQuery_ || !view_ || !model_)
+            return;
+        if (view_->model() != model_ ||
+            className(model_) != QStringLiteral("Alg::NewResourceListModel")) {
+            QWidget *container = container_.data();
+            unbind(true);
+            if (container)
+                bindContainer(container);
+            return;
+        }
+
+        const QStringList terms = normalizedTerms();
+        if (terms.isEmpty()) {
+            clearHiddenRows();
+            return;
+        }
+
+        for (int row = 0; row < model_->rowCount(); ++row) {
+            const QModelIndex index = model_->index(row, 0);
+            const QString source =
+                index.data(Qt::DisplayRole).toString().trimmed();
+            const QString target = translated(
+                source, false, translationControlId(view_, source));
+            const QString searchable =
+                normalizeForMatch(source + QLatin1Char(' ') + target);
+
+            bool matches = true;
+            for (const QString &term : terms) {
+                if (!searchable.contains(term)) {
+                    matches = false;
+                    break;
+                }
+            }
+            view_->setRowHidden(row, !matches);
+        }
+
+        const QModelIndex current = view_->currentIndex();
+        if (current.isValid() && view_->isRowHidden(current.row())) {
+            view_->clearSelection();
+            view_->setCurrentIndex(QModelIndex());
+        }
+        view_->doItemsLayout();
+        if (view_->viewport())
+            view_->viewport()->update();
+    }
+
+    void clearHiddenRows() {
+        if (!view_ || !model_ || view_->model() != model_)
+            return;
+        for (int row = 0; row < model_->rowCount(); ++row)
+            view_->setRowHidden(row, false);
+        view_->doItemsLayout();
+        if (view_->viewport())
+            view_->viewport()->update();
+    }
+
+    void unbind(bool restoreNative) {
+        if (timer_)
+            timer_->stop();
+        QObject::disconnect(fieldConnection_);
+        fieldConnection_ = {};
+        disconnectModel();
+        deactivateLocalQuery(restoreNative);
+        field_.clear();
+        view_.clear();
+        model_.clear();
+        container_.clear();
+        applying_ = false;
+    }
+
+    QTimer *timer_ = nullptr;
+    QPointer<QWidget> container_;
+    QPointer<QLineEdit> field_;
+    QPointer<QListView> view_;
+    QPointer<QAbstractItemModel> model_;
+    QMetaObject::Connection fieldConnection_;
+    QList<QMetaObject::Connection> modelConnections_;
+    QString query_;
+    bool active_ = true;
+    bool localQuery_ = false;
+    bool applying_ = false;
+};
+
+PainterAssetRowFilter *g_assetRowFilter = nullptr;
+
+void observePainterAssetSearch(QWidget *widget) {
+    if (g_assetRowFilter)
+        g_assetRowFilter->observe(widget);
+}
+
 bool isResourcePickerView(QAbstractItemView *view) {
     if (!view)
         return false;
@@ -1497,6 +1821,11 @@ void translateWidget(QWidget *widget) {
     if (!supportedType || shouldExcludeLayersPanel(widget))
         return;
 
+    // Painter's Assets search is owned by the same NewResourcesView as its
+    // native list. Observe either child as it appears; the bridge binds only
+    // after the exact SP11 field/view/model triplet is present.
+    observePainterAssetSearch(widget);
+
     const QString className = QString::fromLatin1(widget->metaObject()->className());
     if (auto *itemView = qobject_cast<QAbstractItemView *>(widget)) {
         if (isDesignerResourceList(itemView) ||
@@ -2145,6 +2474,8 @@ bool saveTranslation(const QString &source, const QString &target,
 }
 
 void refreshTranslatedViews() {
+    if (g_assetRowFilter)
+        g_assetRowFilter->translationsChanged();
     for (QWidget *widget : QApplication::allWidgets()) {
         if (!widget)
             continue;
@@ -2831,7 +3162,7 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
     // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
-    return L"20260813-clean-lifecycle";
+    return L"20260814-painter-cjk-ime-filter";
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
@@ -2861,12 +3192,16 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_clear_translations() {
     g_translationPaths.clear();
     g_fuzzyResolved.clear();
     g_translationsFolded.clear();
+    if (g_assetRowFilter)
+        g_assetRowFilter->translationsChanged();
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fuzzy_match(
     int enabled) {
     g_fuzzyMatchEnabled = enabled != 0;
     g_fuzzyResolved.clear();
+    if (g_assetRowFilter)
+        g_assetRowFilter->translationsChanged();
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_scan(
@@ -2976,11 +3311,15 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_translation(
         g_translationsFolded.insert(normalizeForMatch(sourceString),
                                     targetString);
         g_originals.insert(targetString, sourceString);
+        if (g_assetRowFilter)
+            g_assetRowFilter->translationsChanged();
     }
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enabled) {
     g_enabled = enabled != 0;
+    if (g_assetRowFilter)
+        g_assetRowFilter->setActive(g_enabled);
     if (g_enabled) {
         if (g_translateDesignerGraph) {
             try {
@@ -3042,6 +3381,8 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translatio
                                                         targetString);
         g_controlTranslationsFolded[controlTypeString].insert(
             normalizeForMatch(sourceString), targetString);
+        if (g_assetRowFilter)
+            g_assetRowFilter->translationsChanged();
     }
 }
 
@@ -3050,6 +3391,8 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_id_translation(
     if (id && target) {
         g_idTranslations.insert(QString::fromWCharArray(id),
                                 QString::fromWCharArray(target));
+        if (g_assetRowFilter)
+            g_assetRowFilter->translationsChanged();
     }
 }
 
@@ -3085,6 +3428,10 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
         g_filter = new TranslationUiFilter(application);
         application->installEventFilter(g_filter);
     }
+    if (!g_assetRowFilter) {
+        g_assetRowFilter = new PainterAssetRowFilter(application);
+        g_assetRowFilter->setActive(g_enabled);
+    }
     if (!g_fallbackTimer) {
         g_fallbackTimer = new QTimer(application);
         g_fallbackTimer->setInterval(10000);
@@ -3105,6 +3452,11 @@ sp_delegate_uninstall_ui(void *applicationPointer) {
 
     if (g_filter && application)
         application->removeEventFilter(g_filter);
+    if (g_assetRowFilter) {
+        g_assetRowFilter->shutdown();
+        delete g_assetRowFilter;
+        g_assetRowFilter = nullptr;
+    }
     if (g_fallbackTimer) {
         g_fallbackTimer->stop();
         delete g_fallbackTimer;

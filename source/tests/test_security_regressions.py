@@ -116,6 +116,33 @@ class SecurityRegressionTests(unittest.TestCase):
         ):
             self.assertNotIn(marker, combined)
 
+    def test_painter_cjk_search_keeps_the_native_asset_model(self):
+        cpp = CPP_SOURCE.read_text(encoding="utf-8")
+        for marker in (
+            "PainterAssetRowFilter",
+            "Alg::NewResourcesView",
+            "Alg::SearchFieldLineEdit",
+            "Alg::NewResourceListModel",
+            "&QLineEdit::textChanged",
+            "QSignalBlocker",
+            "setRowHidden",
+            "restoreNativeQuery",
+            "g_assetRowFilter->shutdown()",
+        ):
+            self.assertIn(marker, cpp)
+        for forbidden in (
+            "QSortFilterProxyModel",
+            "QIdentityProxyModel",
+            "setSourceModel(",
+        ):
+            # The explanatory comment may name the unsupported proxy class;
+            # executable code must not instantiate or configure one.
+            executable = "\n".join(
+                line for line in cpp.splitlines()
+                if not line.lstrip().startswith("//")
+            )
+            self.assertNotIn(forbidden, executable)
+
     def test_native_global_hook_has_teardown(self):
         cpp = CPP_SOURCE.read_text(encoding="utf-8")
         python = MODULE_SOURCE.read_text(encoding="utf-8")

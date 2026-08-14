@@ -148,43 +148,21 @@ def _validate_sources() -> None:
                 f"{dictionary_path.name} 的 language 必须是 zh-CN"
             )
         translations = payload.get("translations", {})
-        control_types = payload.get("control_types", {})
         if not isinstance(translations, dict):
             raise ValueError(
                 f"{dictionary_path.name} 的 translations 必须是对象"
             )
-        if not isinstance(control_types, dict):
-            raise ValueError(
-                f"{dictionary_path.name} 的 control_types 必须是对象"
-            )
-        sections = [("translations", translations)]
-        for control_type, section in control_types.items():
-            if not isinstance(control_type, str) or not control_type.strip():
-                raise ValueError(
-                    f"{dictionary_path.name} 含无效 control_type"
-                )
-            if not isinstance(section, dict) or not isinstance(
-                    section.get("translations"), dict):
-                raise ValueError(
-                    f"{dictionary_path.name} 的 {control_type!r} 缺少 "
-                    "translations 对象"
-                )
-            sections.append(
-                (f"control_types.{control_type}", section["translations"])
-            )
-        if not translations and not control_types:
+        if not translations:
             raise ValueError(f"{dictionary_path.name} 不含任何翻译词条")
-        for section_name, entries in sections:
-            invalid = [
-                key for key, value in entries.items()
-                if not isinstance(key, str) or not key
-                or not isinstance(value, str)
-            ]
-            if invalid:
-                raise ValueError(
-                    f"{dictionary_path.name} 的 {section_name} 含无效词条: "
-                    f"{invalid[:5]}"
-                )
+        invalid = [
+            key for key, value in translations.items()
+            if not isinstance(key, str) or not key
+            or not isinstance(value, str)
+        ]
+        if invalid:
+            raise ValueError(
+                f"{dictionary_path.name} 含无效词条: {invalid[:5]}"
+            )
 
 
 def _build_native() -> None:

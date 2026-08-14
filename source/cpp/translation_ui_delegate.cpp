@@ -76,7 +76,6 @@
 namespace {
 QHash<QString, QString> g_translations;
 QHash<QString, QString> g_originals;
-QHash<QString, QHash<QString, QString>> g_controlTranslations;
 QHash<QString, QString> g_idTranslations;
 QHash<QString, QString> g_translationPaths;
 QString g_fallbackPath;
@@ -94,13 +93,10 @@ QString g_editKey = QStringLiteral("Ctrl");
 int g_heldEditKey = 0;
 Qt::MouseButton g_editButton = Qt::RightButton;
 QKeySequence g_enableShortcut;
-QKeySequence g_editKeyShortcut;
 // 快捷键改为“松开时触发一次”：按下时只记录，KeyRelease 时再触发，
 // 避免按住 F10/F9 等键时自动重复事件让回调风暴式反复执行。
 int g_enableShortcutArmed = 0;
-int g_editKeyShortcutArmed = 0;
 qint64 g_lastEnableFireMs = 0;
-qint64 g_lastEditFireMs = 0;
 // 编辑弹窗打开期间忽略新的编辑触发，避免按住组合键连点鼠标时
 // 叠出多个“更改翻译”窗口。
 bool g_editDialogOpen = false;
@@ -119,32 +115,30 @@ bool shortcutMatches(const QKeySequence &target, int key,
 bool appClosingDown();
 
 void shortcutDiag(const QString &line) {
+#if defined(SD_TRANSLATION_SHORTCUT_DIAGNOSTICS)
     QFile out(QDir::temp().filePath(QStringLiteral("sp_shortcut_diag.log")));
     if (out.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
         QTextStream stream(&out);
         stream << QDateTime::currentMSecsSinceEpoch() << " " << line << "\n";
     }
+#else
+    Q_UNUSED(line);
+#endif
 }
 
-void fireShortcut(int kind) {
+void fireShortcut() {
     // 应用正在关闭时，即使有排队中的回调也不再调用 Python，
     // 避免 Python 模块卸载过程中被回调触发导致 shiboken 崩溃。
     if (appClosingDown())
         return;
     // 防抖：无论事件如何重复，同一快捷键 100ms 内只触发一次。
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (kind == 0) {
-        if (now - g_lastEnableFireMs < 100)
-            return;
-        g_lastEnableFireMs = now;
-    } else {
-        if (now - g_lastEditFireMs < 100)
-            return;
-        g_lastEditFireMs = now;
-    }
-    shortcutDiag(QStringLiteral("FIRE kind=%1").arg(kind));
+    if (now - g_lastEnableFireMs < 100)
+        return;
+    g_lastEnableFireMs = now;
+    shortcutDiag(QStringLiteral("FIRE enable-shortcut"));
     if (g_shortcutCallback)
-        g_shortcutCallback(kind);
+        g_shortcutCallback(0);
 }
 
 // 判断 Qt 按键是否在物理上仍处于按下状态。用于“按键+鼠标”组合触发：
@@ -198,7 +192,6 @@ bool heldKeyIsDown(int qtKey) {
 
 QHash<QString, QString> g_fuzzyResolved;
 QHash<QString, QString> g_translationsFolded;
-QHash<QString, QHash<QString, QString>> g_controlTranslationsFolded;
 constexpr auto kSourceProperty = "_sp_translation_source";
 constexpr auto kTranslatingComboProperty = "_sp_translation_combo_busy";
 // 下拉选项的原文存在每个选项自己的 itemData 里（而不是按索引的列表），
@@ -343,30 +336,6 @@ QString fuzzyTranslation(const QString &key) {
     return g_translationsFolded.value(normalized);
 }
 
-// Fuzzy lookup across every control-scoped dictionary, used by the unified
-// pipeline after the global fuzzy tier. Only exact scoped lookups and exact
-// global lookups may run before it, so a scoped fuzzy hit can never override
-// a precise entry.
-QString anyControlFuzzyTranslation(const QString &key) {
-    if (key.isEmpty())
-        return {};
-    const QString normalized = normalizeForMatch(key);
-    if (normalized.size() < 2)
-        return {};
-    for (auto it = g_controlTranslationsFolded.cbegin();
-         it != g_controlTranslationsFolded.cend(); ++it) {
-        const auto found = it.value().constFind(normalized);
-        if (found != it.value().cend())
-            return found.value();
-    }
-    return {};
-}
-
-// Search every control-scoped dictionary. List/tree views have no control
-// type of their own, but official-library asset names (Difference, Multiply,
-// Overlay, ...) frequently exist only in scoped dictionaries such as
-// layer_blend_mode. Exact scoped lookup only; the global exact map and this
-// tier both run before any fuzzy lookup.
 QComboBox *owningComboBox(QAbstractItemView *view) {
     if (!view)
         return nullptr;
@@ -401,10 +370,9 @@ QComboBox *owningComboBoxFast(QAbstractItemView *view) {
 QString translated(const QString &text, bool removeMnemonic = false,
                    const QString &controlId = QString()) {
     // translated() 查找顺序：
-//   1. 先识别控件 ID（上级类名||自身类名||自身 objectName||原文），在
-    //      id_types_zh.json 中按完整 ID 键精确查找，命中即返回；
-    //   2. 全局词库（official/my_assets_zh.json）命中即返回；
-    //   3. 全局仍未命中，直接走模糊匹配兜底。
+    //   1. 控件 ID 专属词库（control_ids_zh.json）精确查找；
+    //   2. 全局词库精确查找；
+    //   3. 全局模糊匹配兜底。
     if (!g_enabled)
         return {};
     QString key = text.trimmed();
@@ -470,9 +438,6 @@ QString translated(const QString &text, bool removeMnemonic = false,
         const QString fuzzy = fuzzyTranslation(key);
         if (!fuzzy.isNull())
             return fuzzy + stateSuffix;
-        const QString scopedFuzzy = anyControlFuzzyTranslation(key);
-        if (!scopedFuzzy.isNull())
-            return scopedFuzzy + stateSuffix;
     }
     return {};
 }
@@ -1306,8 +1271,6 @@ QString translateMixedPortLabel(const QString &source) {
         QString target = g_translations.value(word);
         if (target.isNull() && g_fuzzyMatchEnabled)
             target = fuzzyTranslation(word);
-        if (target.isNull() && g_fuzzyMatchEnabled)
-            target = anyControlFuzzyTranslation(word);
         if (!target.isNull() && target != word) {
             result.replace(i, j - i, target);
             changed = true;
@@ -1373,8 +1336,6 @@ QString graphPaintTranslation(QPainter *painter, const QString &source,
     // active.
     if (target.isNull() && g_fuzzyMatchEnabled)
         target = fuzzyTranslation(source);
-    if (target.isNull() && g_fuzzyMatchEnabled)
-        target = anyControlFuzzyTranslation(source);
 
     // 4. Port labels that are mixed CJK/ASCII: translate the remaining
     // English word segments (e.g. "（主要）Background" -> "（主要）背景").
@@ -2160,7 +2121,8 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
     else if (auto *combo = qobject_cast<QComboBox *>(widget)) {
         displayed = combo->currentText();
         const QString source = comboStoredSource(combo, combo->currentIndex());
-        if (!source.isEmpty() && g_translations.value(source) == displayed)
+        if (!source.isEmpty() &&
+            translated(source, false, translationControlId(combo, source)) == displayed)
             return source;
     }
     else if (auto *tabs = qobject_cast<QTabBar *>(widget)) {
@@ -2171,7 +2133,8 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
             const QString source = storedVariant.isValid()
                                        ? storedVariant.toString()
                                        : QString();
-            if (!source.isEmpty() && g_translations.value(source) == displayed)
+            if (!source.isEmpty() &&
+                translated(source, false, translationControlId(tabs, source)) == displayed)
                 return source;
         }
     }
@@ -2185,6 +2148,11 @@ QString originalTextAt(QWidget *widget, const QPoint &position) {
 
     displayed.remove(u'&');
     displayed = displayed.trimmed();
+    const QString storedSource = widget->property(kSourceProperty).toString();
+    if (!storedSource.isEmpty() &&
+        translated(storedSource, false,
+                   translationControlId(widget, storedSource)) == displayed)
+        return storedSource;
     const auto found = g_originals.constFind(displayed);
     return found == g_originals.cend() ? QString() : found.value();
 }
@@ -2435,7 +2403,7 @@ return orNone(parentClassName) + QStringLiteral("||")
 }
 
 bool saveTranslation(const QString &source, const QString &target,
-                     const QString &controlType, QString *error,
+                     QString *error,
                      const QString &fixedPath = QString()) {
     const QString translationPath = fixedPath.isEmpty()
         ? g_translationPaths.value(source, g_fallbackPath)
@@ -2484,22 +2452,10 @@ bool saveTranslation(const QString &source, const QString &target,
             *error = QStringLiteral("原始翻译文件格式无效：%1").arg(translationPath);
         return false;
     }
-    if (controlType.isEmpty()) {
-        QJsonObject translations =
-            root.value(QStringLiteral("translations")).toObject();
-        translations.insert(source, target);
-        root.insert(QStringLiteral("translations"), translations);
-    } else {
-        QJsonObject controlTypes =
-            root.value(QStringLiteral("control_types")).toObject();
-        QJsonObject section = controlTypes.value(controlType).toObject();
-        QJsonObject translations =
-            section.value(QStringLiteral("translations")).toObject();
-        translations.insert(source, target);
-        section.insert(QStringLiteral("translations"), translations);
-        controlTypes.insert(controlType, section);
-        root.insert(QStringLiteral("control_types"), controlTypes);
-    }
+    QJsonObject translations =
+        root.value(QStringLiteral("translations")).toObject();
+    translations.insert(source, target);
+    root.insert(QStringLiteral("translations"), translations);
 
     const QFileInfo info(translationPath);
     if (!QDir().mkpath(info.absolutePath())) {
@@ -2791,21 +2747,9 @@ void editTranslation(const QString &source, const QString &uniqueId,
                      const QString &panelName, QWidget *parent) {
     if (source.isEmpty())
         return;
-    QString scopedControlType;
     QString current = g_idTranslations.value(uniqueId);
     if (current.isNull())
         current = g_translations.value(source);
-    if (current.isNull()) {
-        for (auto it = g_controlTranslations.cbegin();
-             it != g_controlTranslations.cend(); ++it) {
-            const auto found = it.value().constFind(source);
-            if (found != it.value().cend()) {
-                scopedControlType = it.key();
-                current = found.value();
-                break;
-            }
-        }
-    }
     if (current.isNull())
         current = source;
 
@@ -2905,7 +2849,7 @@ void editTranslation(const QString &source, const QString &uniqueId,
     const bool saveToId = idCheck->isChecked() && !uniqueId.isEmpty();
     if (saveToId) {
         // 保存到专项词库：以完整控件 ID 为键写入 control_ids_zh.json。
-        if (!saveTranslation(uniqueId, target, QString(), &error,
+        if (!saveTranslation(uniqueId, target, &error,
                              g_idTranslationPath)) {
             showHostMessage(parent, QStringLiteral("保存翻译失败"), error,
                             QMessageBox::Critical);
@@ -2913,17 +2857,15 @@ void editTranslation(const QString &source, const QString &uniqueId,
         }
         g_idTranslations.insert(uniqueId, target);
     } else {
-        if (!saveTranslation(source, target, scopedControlType, &error)) {
+        if (!saveTranslation(source, target, &error)) {
             showHostMessage(parent, QStringLiteral("保存翻译失败"), error,
                             QMessageBox::Critical);
             return;
         }
         // Keep historical reverse entries until restart so widgets currently
         // showing an older translation can still resolve back to the source.
-        if (scopedControlType.isEmpty())
-            g_translations.insert(source, target);
-        else
-            g_controlTranslations[scopedControlType].insert(source, target);
+        g_translations.insert(source, target);
+        g_translationsFolded.insert(normalizeForMatch(source), target);
         g_originals.insert(target, source);
     }
     // 新词条可能让此前缓存为空结果的模糊/工具提示匹配立即生效。
@@ -2947,9 +2889,6 @@ protected:
                 // 只记录按下，待 KeyRelease 时触发一次。
                 g_enableShortcutArmed = key;
                 shortcutDiag(QStringLiteral("ARM0 key=%1").arg(key));
-            } else if (shortcutMatches(g_editKeyShortcut, key, modifiers)) {
-                g_editKeyShortcutArmed = key;
-                shortcutDiag(QStringLiteral("ARM1 key=%1").arg(key));
             }
             return false;
         }
@@ -2977,19 +2916,7 @@ protected:
                     g_enableShortcutArmed = 0;
                     shortcutDiag(QStringLiteral("KR0 real key=%1")
                                      .arg(keyEvent->key()));
-                    QTimer::singleShot(0, this, [] { fireShortcut(0); });
-                }
-            }
-            if (g_editKeyShortcutArmed != 0 &&
-                keyEvent->key() == g_editKeyShortcutArmed) {
-                if (heldKeyIsDown(g_editKeyShortcutArmed)) {
-                    shortcutDiag(QStringLiteral("KR1 spurious key=%1")
-                                     .arg(keyEvent->key()));
-                } else {
-                    g_editKeyShortcutArmed = 0;
-                    shortcutDiag(QStringLiteral("KR1 real key=%1")
-                                     .arg(keyEvent->key()));
-                    QTimer::singleShot(0, this, [] { fireShortcut(1); });
+                    QTimer::singleShot(0, this, [] { fireShortcut(); });
                 }
             }
             return false;
@@ -2999,7 +2926,6 @@ protected:
         if (type == QEvent::WindowDeactivate) {
             g_heldEditKey = 0;
             g_enableShortcutArmed = 0;
-            g_editKeyShortcutArmed = 0;
             return false;
         }
         if (!g_enabled)
@@ -3236,8 +3162,6 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_id_path(
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_clear_translations() {
     g_translations.clear();
     g_originals.clear();
-    g_controlTranslations.clear();
-    g_controlTranslationsFolded.clear();
     g_idTranslations.clear();
     g_translationPaths.clear();
     g_fuzzyResolved.clear();
@@ -3301,31 +3225,6 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enable_shortcut(
     QFile::remove(QDir::temp().filePath(QStringLiteral("sp_shortcut_diag.log")));
 }
 
-extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_edit_key_shortcut(
-    const wchar_t *sequence) {
-    g_editKeyShortcut = sequence
-        ? QKeySequence(QString::fromWCharArray(sequence))
-        : QKeySequence();
-    g_editKeyShortcutArmed = 0;
-}
-
-extern "C" __declspec(dllexport) void __cdecl sp_delegate_show_edit_at_cursor() {
-    if (!g_enabled)
-        return;
-    QWidget *widget = QApplication::widgetAt(QCursor::pos());
-    if (!widget)
-        return;
-    const QPoint position = widget->mapFromGlobal(QCursor::pos());
-    const QString source = contextSourceAt(widget, position);
-    if (source.isEmpty())
-        return;
-    if (g_editDialogOpen)
-        return;
-    const QString uniqueId = controlUniqueId(widget, source);
-    const QString panelName = controlPanelName(widget);
-    editTranslation(source, uniqueId, panelName, widget->window());
-}
-
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_reserve_translations(
     int count) {
     if (count > 0) {
@@ -3342,11 +3241,14 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_is_extractable(
     const QString value = QString::fromWCharArray(text).trimmed();
     if (!extraction_rules::validSource(value.toStdString()))
         return 0;
-    if (g_translations.contains(value) || g_idTranslations.contains(value))
+    if (g_translations.contains(value))
         return 0;
-    for (auto it = g_controlTranslations.cbegin();
-         it != g_controlTranslations.cend(); ++it) {
-        if (it.value().contains(value))
+    for (auto it = g_idTranslations.cbegin();
+         it != g_idTranslations.cend(); ++it) {
+        const QString id = it.key();
+        const int separator = id.lastIndexOf(QStringLiteral("||"));
+        const QString source = separator >= 0 ? id.mid(separator + 2) : id;
+        if (source == value)
             return 0;
     }
     return 1;
@@ -3420,21 +3322,6 @@ sp_delegate_set_translate_designer_graph(int enabled) {
     g_translateDesignerGraph = true;
     refreshGraphViews();
     return 1;
-}
-
-extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_control_translation(
-    const wchar_t *controlType, const wchar_t *source, const wchar_t *target) {
-    if (controlType && source && target) {
-        const QString controlTypeString = QString::fromWCharArray(controlType);
-        const QString sourceString = QString::fromWCharArray(source);
-        const QString targetString = QString::fromWCharArray(target);
-        g_controlTranslations[controlTypeString].insert(sourceString,
-                                                        targetString);
-        g_controlTranslationsFolded[controlTypeString].insert(
-            normalizeForMatch(sourceString), targetString);
-        if (g_assetRowFilter)
-            g_assetRowFilter->translationsChanged();
-    }
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_id_translation(

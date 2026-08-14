@@ -462,7 +462,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "translator_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "1.3.3"
+PLUGIN_VERSION = "1.3.4"
 PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -514,7 +514,6 @@ if HOST == "designer":
     TRANSLATE_LAYERS_PANEL = False
 
 # Designer 生命周期状态（Painter 复用原有的 _label_extractor_* 全局变量）。
-_enabled_action = None
 _tool_action = None
 _startup_timer = None
 
@@ -603,21 +602,17 @@ def is_safe(obj):
 # ==========================================
 TRANSLATE_DICT = {}
 TRANSLATE_SOURCE_FILES = {}
-CONTROL_TRANSLATE_DICTS = {}
 ID_TRANSLATE_DICTS = {}
 
 
 def load_translation_packages():
     """Merge every UTF-8 ``*_zh.json`` package beside this plugin.
 
-    A package can contain root-level ``translations`` and/or a
-    ``control_types`` object whose entries each own a ``translations`` object.
-    Files load alphabetically; a later package intentionally overrides
-    duplicate strings within the same scope.
+    Each package contains a root-level ``translations`` object. Files load
+    alphabetically; a later package intentionally overrides duplicate strings.
     """
     TRANSLATE_DICT.clear()
     TRANSLATE_SOURCE_FILES.clear()
-    CONTROL_TRANSLATE_DICTS.clear()
     ID_TRANSLATE_DICTS.clear()
     plugin_dir = TRANSLATIONS_DIR
     if not os.path.isdir(plugin_dir):
@@ -640,14 +635,11 @@ def load_translation_packages():
                 raise ValueError("unsupported or missing $schema")
             if payload.get("language") != "zh-CN":
                 raise ValueError("language must be zh-CN")
-            control_types = payload.get("control_types", {})
-            if not isinstance(control_types, dict):
-                raise ValueError("control_types must be a JSON object")
             entries = payload.get("translations", {})
             if not isinstance(entries, dict):
                 raise ValueError("translations must be a JSON object")
-            if not entries and not control_types:
-                raise ValueError("package must contain translations or control_types")
+            if not entries:
+                raise ValueError("package must contain translations")
             loaded = 0
             if name.lower() == "control_ids_zh.json":
                 # ID 专属词库：与全局词库同格式（根级 translations），
@@ -663,25 +655,6 @@ def load_translation_packages():
                     if (isinstance(source, str) and isinstance(target, str)
                             and source and target):
                         TRANSLATE_DICT[source] = target
-                        TRANSLATE_SOURCE_FILES[source] = path
-                        loaded += 1
-            for control_type, section in control_types.items():
-                if not isinstance(control_type, str) or not control_type.strip():
-                    raise ValueError("control type names must be non-empty strings")
-                if not isinstance(section, dict):
-                    raise ValueError(f"control type {control_type!r} must be an object")
-                scoped_entries = section.get("translations")
-                if not isinstance(scoped_entries, dict):
-                    raise ValueError(
-                        f"control type {control_type!r} translations must be an object"
-                    )
-                destination = CONTROL_TRANSLATE_DICTS.setdefault(
-                    control_type.strip(), {}
-                )
-                for source, target in scoped_entries.items():
-                    if (isinstance(source, str) and isinstance(target, str)
-                            and source and target):
-                        destination[source] = target
                         TRANSLATE_SOURCE_FILES[source] = path
                         loaded += 1
             print(f">>> 已加载翻译包 {name}: {loaded} 条")
@@ -710,10 +683,6 @@ def _load_native_delegate():
         dll.sp_delegate_reserve_translations.restype = None
         dll.sp_delegate_add_translation.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
         dll.sp_delegate_add_translation.restype = None
-        dll.sp_delegate_add_control_translation.argtypes = [
-            ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p
-        ]
-        dll.sp_delegate_add_control_translation.restype = None
         dll.sp_delegate_add_id_translation.argtypes = [
             ctypes.c_wchar_p, ctypes.c_wchar_p
         ]
@@ -740,8 +709,6 @@ def _load_native_delegate():
         dll.sp_delegate_set_shortcut_callback.restype = None
         dll.sp_delegate_set_enable_shortcut.argtypes = [ctypes.c_wchar_p]
         dll.sp_delegate_set_enable_shortcut.restype = None
-        dll.sp_delegate_show_edit_at_cursor.argtypes = []
-        dll.sp_delegate_show_edit_at_cursor.restype = None
         dll.sp_delegate_set_translate_layers.argtypes = [ctypes.c_int]
         dll.sp_delegate_set_translate_layers.restype = None
         dll.sp_delegate_set_translate_designer_graph.argtypes = [ctypes.c_int]
@@ -803,11 +770,6 @@ def _sync_native_dictionary():
         for source, target in TRANSLATE_DICT.items():
             if isinstance(source, str) and isinstance(target, str):
                 dll.sp_delegate_add_translation(source, target)
-        for control_type, entries in CONTROL_TRANSLATE_DICTS.items():
-            for source, target in entries.items():
-                dll.sp_delegate_add_control_translation(
-                    control_type, source, target
-                )
         for id_string, target in ID_TRANSLATE_DICTS.items():
             if isinstance(id_string, str) and isinstance(target, str):
                 dll.sp_delegate_add_id_translation(id_string, target)
@@ -1781,9 +1743,10 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             return
         excluded = set(TRANSLATE_DICT)
         # control_ids_zh.json 的 ID 专属词条同样不应重复提取。
-        excluded.update(ID_TRANSLATE_DICTS)
-        for translations in CONTROL_TRANSLATE_DICTS.values():
-            excluded.update(translations)
+        for id_string in ID_TRANSLATE_DICTS:
+            source = id_string.rsplit("||", 1)[-1] if isinstance(id_string, str) else ""
+            if source and source != "*":
+                excluded.add(source)
         descriptor, request_path = tempfile.mkstemp(
             prefix="sp_translation_request_", suffix=".json"
         )
@@ -2063,10 +2026,9 @@ def _set_fuzzy_match(enabled):
     """
     global FUZZY_MATCH_ENABLED
     FUZZY_MATCH_ENABLED = bool(enabled)
-    if HOST == "painter":
-        QtCore.QSettings().setValue(
-            "substance3d_chinese_translator/fuzzy_match", FUZZY_MATCH_ENABLED
-        )
+    QtCore.QSettings().setValue(
+        "substance3d_chinese_translator/fuzzy_match", FUZZY_MATCH_ENABLED
+    )
     _call_native(
         "sp_delegate_set_fuzzy_match", int(FUZZY_MATCH_ENABLED),
         label="切换模糊匹配",
@@ -2085,13 +2047,6 @@ def _set_fallback_scan(enabled):
         "sp_delegate_set_fallback_scan", int(FALLBACK_SCAN_ENABLED),
         label="切换全量扫描兜底",
     )
-
-
-def _show_edit_at_cursor():
-    """快捷键触发：对鼠标当前悬停的控件弹出“更改翻译”。"""
-    if IS_APP_QUITTING or IS_CLEANING:
-        return
-    _call_native("sp_delegate_show_edit_at_cursor", label="打开更改翻译")
 
 
 def _toggle_enable_shortcut():
@@ -2113,11 +2068,9 @@ _shortcut_callback = None
 
 @ctypes.CFUNCTYPE(None, ctypes.c_int)
 def _on_shortcut(kind):
-    """原生引擎识别到快捷键后的回调（0=启用/禁用，1=更改翻译弹窗）。"""
+    """原生引擎识别到快捷键后的回调（0=启用/禁用）。"""
     if kind == 0:
         _toggle_enable_shortcut()
-    elif kind == 1:
-        _show_edit_at_cursor()
 
 
 def _apply_shortcuts():
@@ -2157,10 +2110,9 @@ def _set_translation_enabled(enabled):
     """
     global IS_TRANSLATION_ENABLED
     IS_TRANSLATION_ENABLED = bool(enabled)
-    if HOST == "painter":
-        QtCore.QSettings().setValue(
-            "substance3d_chinese_translator/enabled", IS_TRANSLATION_ENABLED
-        )
+    QtCore.QSettings().setValue(
+        "substance3d_chinese_translator/enabled", IS_TRANSLATION_ENABLED
+    )
     _call_native(
         "sp_delegate_set_enabled", int(IS_TRANSLATION_ENABLED),
         label="切换插件翻译总开关",
@@ -2169,12 +2121,6 @@ def _set_translation_enabled(enabled):
             and TRANSLATE_DESIGNER_GRAPH
             and not _sync_designer_graph_translation()):
         _set_designer_graph_translation(False)
-    if _enabled_action is not None:
-        try:
-            if _enabled_action.isChecked() != IS_TRANSLATION_ENABLED:
-                _enabled_action.setChecked(IS_TRANSLATION_ENABLED)
-        except Exception:
-            pass
     if is_safe(_label_extractor_dialog):
         try:
             _label_extractor_dialog.translation_enabled_check.setChecked(
@@ -2338,6 +2284,8 @@ def _normalized_zip_name(info):
         or raw_name.startswith("/")
         or any(part == ".." for part in parts)
         or (len(raw_name) >= 2 and raw_name[1] == ":")
+        or any(ord(character) < 0x20 for character in raw_name)
+        or any(":" in part or part.endswith((".", " ")) for part in parts)
         or ((info.external_attr >> 16) & 0o170000) == 0o120000
     )
     if unsafe:
@@ -2594,8 +2542,7 @@ def _check_updates(parent=None):
         if "403" in detail or "rate limit" in detail.casefold():
             hint = (
                 "GitHub API 触发限流（未登录每小时 60 次）。\n"
-                "插件已自动尝试通过网页重定向获取版本信息，"
-                "若仍失败请稍后再试。"
+                "请稍后再试。"
             )
         else:
             hint = "请确认网络可访问 GitHub，稍后再试。"
@@ -2808,9 +2755,6 @@ def _apply_update_now(zip_path, parent=None):
         except OSError:
             pass
 
-        # Restore the normal cursor before showing the dialog so the mouse
-        # does not keep spinning while the message is on screen.
-        QtWidgets.QApplication.restoreOverrideCursor()
         QtWidgets.QMessageBox.information(
             parent,
             "更新已应用",
@@ -2838,7 +2782,6 @@ def _apply_update_now(zip_path, parent=None):
                 _copytree_merge(backup_dir, PLUGIN_DIR)
         except Exception:
             pass
-        QtWidgets.QApplication.restoreOverrideCursor()
         kept = (
             f"\n更新包保留在: {zip_path}，可稍后重试或手动安装。"
             if os.path.isfile(zip_path) else ""
@@ -3092,7 +3035,7 @@ def close_plugin():
 # ==========================================
 def initializeSDPlugin():
     """Substance 3D Designer 插件入口。"""
-    global _enabled_action, _tool_action, _startup_timer
+    global _tool_action, _startup_timer
     global IS_APP_QUITTING, IS_CLEANING
 
     main_window = _get_main_window()
@@ -3108,11 +3051,7 @@ def initializeSDPlugin():
     # Designer 主窗口还在构建中，先禁用翻译，3 秒后自动启用。
     _set_translation_enabled(False)
 
-    # 保持 Designer 菜单紧凑：菜单栏只加一个“中文翻译工具”入口。
-    _enabled_action = QAction("启用实时翻译", main_window)
-    _enabled_action.setCheckable(True)
-    _enabled_action.setChecked(False)
-    _enabled_action.toggled.connect(_set_translation_enabled)
+    # Designer 菜单栏只保留一个“中文翻译工具”入口；翻译总开关在工具窗口内。
     _tool_action = _register_tool_action(main_window)
 
     _startup_timer = QtCore.QTimer(main_window)
@@ -3128,7 +3067,7 @@ def initializeSDPlugin():
 
 def uninitializeSDPlugin():
     """Substance 3D Designer 插件卸载入口。"""
-    global _enabled_action, _tool_action, _startup_timer
+    global _tool_action, _startup_timer
 
     if is_safe(_startup_timer):
         try:
@@ -3138,12 +3077,6 @@ def uninitializeSDPlugin():
             pass
     _teardown_engine()
     _remove_menu_action(_tool_action)
-    if is_safe(_enabled_action):
-        try:
-            delete(_enabled_action)
-        except Exception:
-            pass
-    _enabled_action = None
     _tool_action = None
     _startup_timer = None
     print("[Designer 中文翻译] 插件已停止")

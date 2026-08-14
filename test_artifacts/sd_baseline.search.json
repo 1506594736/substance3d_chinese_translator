@@ -1,0 +1,40 @@
+[
+  {
+    "label": "initial",
+    "field": "",
+    "model": "Pfx::DataBase::ResourcesListModel",
+    "rows": 9,
+    "hidden": 0,
+    "items": [
+      "Base color/metallic/roughness converter",
+      "PBR albedo safe color",
+      "Base material",
+      "PBR base color / metallic validate",
+      "PBR dielectric F0",
+      "PBR metal reflectance",
+      "PBR render",
+      "PBR render mapping color",
+      "PBR render mapping grayscale"
+    ]
+  },
+  {
+    "label": "english",
+    "field": "PBR render",
+    "model": "Pfx::DataBase::ResourcesListModel",
+    "rows": 3,
+    "hidden": 0,
+    "items": [
+      "PBR render",
+      "PBR render mapping color",
+      "PBR render mapping grayscale"
+    ]
+  },
+  {
+    "label": "chinese",
+    "field": "粗糙度",
+    "model": "Pfx::DataBase::ResourcesListModel",
+    "rows": 0,
+    "hidden": 0,
+    "items": []
+  }
+]

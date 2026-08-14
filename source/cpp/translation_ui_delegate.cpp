@@ -780,9 +780,9 @@ void restoreAssetDelegates() {
 // rows in the native QListView.  This preserves Painter-owned QModelIndex,
 // drag/drop, activation and selection semantics and needs no reverse
 // Chinese-to-English dictionary.
-class PainterAssetRowFilter final : public QObject {
+class AssetRowFilter final : public QObject {
 public:
-    explicit PainterAssetRowFilter(QObject *parent = nullptr)
+    explicit AssetRowFilter(QObject *parent = nullptr)
         : QObject(parent), timer_(new QTimer(this)) {
         timer_->setSingleShot(true);
         timer_->setInterval(40);
@@ -818,36 +818,72 @@ public:
     }
 
 private:
+    enum class HostKind { None, Painter, Designer };
+
     static QString className(const QObject *object) {
         return object
                    ? QString::fromLatin1(object->metaObject()->className())
                    : QString();
     }
 
+    static HostKind containerKind(const QObject *object) {
+        const QString type = className(object);
+        if (type == QStringLiteral("Alg::NewResourcesView"))
+            return HostKind::Painter;
+        if (type == QStringLiteral("Pfx::DataBase::ResourceTableWidget") &&
+            object->objectName() == QStringLiteral("mResourceTableWidget"))
+            return HostKind::Designer;
+        return HostKind::None;
+    }
+
     static QWidget *resourcesContainer(QWidget *widget) {
         int depth = 0;
         for (QObject *current = widget; current && depth < 14;
              current = current->parent(), ++depth) {
-            if (className(current) == QStringLiteral("Alg::NewResourcesView"))
+            if (containerKind(current) != HostKind::None)
                 return qobject_cast<QWidget *>(current);
         }
         return nullptr;
     }
 
+    static bool isSupportedModel(QAbstractItemModel *model, HostKind kind) {
+        const QString type = className(model);
+        if (kind == HostKind::Painter)
+            return type == QStringLiteral("Alg::NewResourceListModel");
+        if (kind == HostKind::Designer)
+            return type == QStringLiteral(
+                       "Pfx::DataBase::ResourcesListModel");
+        return false;
+    }
+
     static bool isMainAssetView(QListView *view, QWidget *container) {
-        if (!view || !container || view->objectName() != QStringLiteral("resources") ||
-            className(view) != QStringLiteral("Alg::ResourceListView") ||
-            resourcesContainer(view) != container || !view->model())
+        if (!view || !container || resourcesContainer(view) != container ||
+            !view->model())
             return false;
-        return className(view->model()) ==
-               QStringLiteral("Alg::NewResourceListModel");
+        const HostKind kind = containerKind(container);
+        if (!isSupportedModel(view->model(), kind))
+            return false;
+        if (kind == HostKind::Painter)
+            return view->objectName() == QStringLiteral("resources") &&
+                   className(view) == QStringLiteral("Alg::ResourceListView");
+        if (kind == HostKind::Designer)
+            return className(view) == QStringLiteral(
+                       "Pfx::DataBase::ResourceTableWidget::CustomListView");
+        return false;
     }
 
     static bool isAssetSearchField(QLineEdit *field, QWidget *container) {
-        return field && container &&
-               field->objectName() == QStringLiteral("search_field") &&
-               className(field) == QStringLiteral("Alg::SearchFieldLineEdit") &&
-               resourcesContainer(field) == container;
+        if (!field || !container || resourcesContainer(field) != container)
+            return false;
+        const HostKind kind = containerKind(container);
+        if (kind == HostKind::Painter)
+            return field->objectName() == QStringLiteral("search_field") &&
+                   className(field) ==
+                       QStringLiteral("Alg::SearchFieldLineEdit");
+        if (kind == HostKind::Designer)
+            return field->objectName() == QStringLiteral("globalSearch") &&
+                   className(field) == QStringLiteral("QLineEdit");
+        return false;
     }
 
     void bindContainer(QWidget *container) {
@@ -874,7 +910,9 @@ private:
 
         if (!field || !view || !view->model())
             return;
-        if (field_ == field && view_ == view && model_ == view->model())
+        const HostKind kind = containerKind(container);
+        if (field_ == field && view_ == view && model_ == view->model() &&
+            hostKind_ == kind)
             return;
 
         unbind(true);
@@ -882,6 +920,7 @@ private:
         field_ = field;
         view_ = view;
         model_ = view->model();
+        hostKind_ = kind;
 
         fieldConnection_ = QObject::connect(
             field, &QLineEdit::textChanged, this,
@@ -1008,7 +1047,7 @@ private:
         if (!active_ || !localQuery_ || !view_ || !model_)
             return;
         if (view_->model() != model_ ||
-            className(model_) != QStringLiteral("Alg::NewResourceListModel")) {
+            !isSupportedModel(model_, hostKind_)) {
             QWidget *container = container_.data();
             unbind(true);
             if (container)
@@ -1072,6 +1111,7 @@ private:
         view_.clear();
         model_.clear();
         container_.clear();
+        hostKind_ = HostKind::None;
         applying_ = false;
     }
 
@@ -1083,16 +1123,26 @@ private:
     QMetaObject::Connection fieldConnection_;
     QList<QMetaObject::Connection> modelConnections_;
     QString query_;
+    HostKind hostKind_ = HostKind::None;
     bool active_ = true;
     bool localQuery_ = false;
     bool applying_ = false;
 };
 
-PainterAssetRowFilter *g_assetRowFilter = nullptr;
+AssetRowFilter *g_assetRowFilter = nullptr;
 
 void observePainterAssetSearch(QWidget *widget) {
     if (g_assetRowFilter)
         g_assetRowFilter->observe(widget);
+}
+
+void scanAssetSearchWidgets() {
+    if (!g_assetRowFilter)
+        return;
+    for (QWidget *widget : QApplication::allWidgets()) {
+        if (widget)
+            g_assetRowFilter->observe(widget);
+    }
 }
 
 bool isResourcePickerView(QAbstractItemView *view) {
@@ -3162,7 +3212,7 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
     // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
-    return L"20260814-painter-cjk-ime-filter";
+    return L"20260814-sp-sd-cjk-search";
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
@@ -3321,6 +3371,7 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enable
     if (g_assetRowFilter)
         g_assetRowFilter->setActive(g_enabled);
     if (g_enabled) {
+        scanAssetSearchWidgets();
         if (g_translateDesignerGraph) {
             try {
                 if (!installGraphPainterHooks())
@@ -3429,9 +3480,10 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
         application->installEventFilter(g_filter);
     }
     if (!g_assetRowFilter) {
-        g_assetRowFilter = new PainterAssetRowFilter(application);
+        g_assetRowFilter = new AssetRowFilter(application);
         g_assetRowFilter->setActive(g_enabled);
     }
+    scanAssetSearchWidgets();
     if (!g_fallbackTimer) {
         g_fallbackTimer = new QTimer(application);
         g_fallbackTimer->setInterval(10000);

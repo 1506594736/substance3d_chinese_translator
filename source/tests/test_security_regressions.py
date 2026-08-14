@@ -119,10 +119,13 @@ class SecurityRegressionTests(unittest.TestCase):
     def test_painter_cjk_search_keeps_the_native_asset_model(self):
         cpp = CPP_SOURCE.read_text(encoding="utf-8")
         for marker in (
-            "PainterAssetRowFilter",
+            "AssetRowFilter",
             "Alg::NewResourcesView",
             "Alg::SearchFieldLineEdit",
             "Alg::NewResourceListModel",
+            "Pfx::DataBase::ResourceTableWidget",
+            "Pfx::DataBase::ResourcesListModel",
+            "globalSearch",
             "&QLineEdit::textChanged",
             "QSignalBlocker",
             "setRowHidden",

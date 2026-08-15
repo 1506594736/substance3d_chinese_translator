@@ -14,6 +14,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 function(add_translator_delegate target output_name qt_root qt_major)
     add_library(${target} SHARED translation_ui_delegate.cpp)
+    if(SP_TOOLTIP_DIAGNOSTICS)
+        target_compile_definitions(${target} PRIVATE
+            SD_TRANSLATION_TOOLTIP_DIAGNOSTICS)
+    endif()
     target_include_directories(${target} PRIVATE
         "${qt_root}/include"
         "${qt_root}/include/QtCore"
@@ -38,6 +42,9 @@ function(add_translator_delegate target output_name qt_root qt_major)
         PREFIX ""
     )
 endfunction()
+
+option(SP_TOOLTIP_DIAGNOSTICS
+    "Enable tooltip hook diagnostics for resource hover previews" OFF)
 
 set(QT6_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../sdks/qt/6.5.3/msvc2019_64")
 if(NOT EXISTS "${QT6_ROOT}/lib/Qt6Widgets.lib")

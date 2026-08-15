@@ -7,6 +7,7 @@
 #include <QtCore/QHash>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QPersistentModelIndex>
 #include <QtCore/QPointer>
 #include <QtCore/QSaveFile>
 #include <QtCore/QSet>
@@ -31,6 +32,7 @@
 #include <QtGui/QPainter>
 #include <QtGui/QPalette>
 #include <QtGui/QTextOption>
+#include <QtGui/QTextDocument>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QAbstractItemDelegate>
 #include <QtWidgets/QAbstractItemView>
@@ -38,6 +40,7 @@
 #include <QtWidgets/QAbstractSlider>
 #include <QtWidgets/QAbstractSpinBox>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QBoxLayout>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDockWidget>
@@ -81,6 +84,24 @@ QHash<QString, QString> g_translationPaths;
 QString g_fallbackPath;
 QString g_idTranslationPath;
 QPointer<QWidget> g_originalTooltipOwner;
+
+struct AssetTooltipContext {
+    QPointer<QAbstractItemView> view;
+    QPersistentModelIndex index;
+    QString source;
+    QString translation;
+    QPoint globalPosition;
+    qint64 createdAt = 0;
+    quint64 generation = 0;
+
+    bool isValid() const {
+        return view && index.isValid() && !source.isEmpty() &&
+               !translation.isEmpty() && generation != 0;
+    }
+};
+
+AssetTooltipContext g_assetTooltipContext;
+quint64 g_assetTooltipGeneration = 0;
 bool g_enabled = true;
 bool g_translateDesignerGraph = false;
 bool g_translateLayersPanel = true;
@@ -117,6 +138,18 @@ bool appClosingDown();
 void shortcutDiag(const QString &line) {
 #if defined(SD_TRANSLATION_SHORTCUT_DIAGNOSTICS)
     QFile out(QDir::temp().filePath(QStringLiteral("sp_shortcut_diag.log")));
+    if (out.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        QTextStream stream(&out);
+        stream << QDateTime::currentMSecsSinceEpoch() << " " << line << "\n";
+    }
+#else
+    Q_UNUSED(line);
+#endif
+}
+
+void tooltipDiag(const QString &line) {
+#if defined(SD_TRANSLATION_TOOLTIP_DIAGNOSTICS)
+    QFile out(QDir::temp().filePath(QStringLiteral("sp_tooltip_diag.log")));
     if (out.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
         QTextStream stream(&out);
         stream << QDateTime::currentMSecsSinceEpoch() << " " << line << "\n";
@@ -1572,7 +1605,8 @@ void hookedDrawXYWH(QPainter *painter, int x, int y, int width, int height,
                target.isEmpty() ? text : target, boundingRect);
 }
 
-bool replaceMainModuleImport(void *original, void *replacement) {
+bool replaceMainModuleImportInto(std::vector<GraphHookSlot> &slotList,
+                                 void *original, void *replacement) {
     if (!original || !replacement)
         return false;
     auto *base = reinterpret_cast<unsigned char *>(GetModuleHandleW(nullptr));
@@ -1600,11 +1634,12 @@ bool replaceMainModuleImport(void *original, void *replacement) {
             auto **slot = reinterpret_cast<void **>(&thunk->u1.Function);
             if (*slot != original)
                 continue;
-            g_graphHookSlots.push_back({slot, original, replacement});
+            GraphHookSlot hook{slot, original, replacement};
+            slotList.push_back(hook);
             DWORD oldProtection = 0;
             if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE,
                                 &oldProtection)) {
-                g_graphHookSlots.pop_back();
+                slotList.pop_back();
                 continue;
             }
             *slot = replacement;
@@ -1617,12 +1652,17 @@ bool replaceMainModuleImport(void *original, void *replacement) {
     return replaced;
 }
 
-bool uninstallGraphPainterHooks() {
-    for (std::size_t index = g_graphHookSlots.size(); index > 0; --index) {
+bool replaceMainModuleImport(void *original, void *replacement) {
+    return replaceMainModuleImportInto(g_graphHookSlots, original,
+                                       replacement);
+}
+
+bool restoreImportHooks(std::vector<GraphHookSlot> &slotList) {
+    for (std::size_t index = slotList.size(); index > 0; --index) {
         const std::size_t current = index - 1;
-        const GraphHookSlot hook = g_graphHookSlots[current];
+        const GraphHookSlot hook = slotList[current];
         if (!hook.slot || *hook.slot != hook.replacement) {
-            g_graphHookSlots.erase(g_graphHookSlots.begin() + current);
+            slotList.erase(slotList.begin() + current);
             continue;
         }
         DWORD oldProtection = 0;
@@ -1633,8 +1673,13 @@ bool uninstallGraphPainterHooks() {
         DWORD ignored = 0;
         VirtualProtect(hook.slot, sizeof(void *), oldProtection, &ignored);
         FlushInstructionCache(GetCurrentProcess(), hook.slot, sizeof(void *));
-        g_graphHookSlots.erase(g_graphHookSlots.begin() + current);
+        slotList.erase(slotList.begin() + current);
     }
+    return slotList.empty();
+}
+
+bool uninstallGraphPainterHooks() {
+    restoreImportHooks(g_graphHookSlots);
     g_graphPainterHooksInstalled = !g_graphHookSlots.empty();
     return !g_graphPainterHooksInstalled;
 }
@@ -1677,11 +1722,20 @@ bool graphHookEnvironmentCompatible() {
 }
 
 template <typename Function>
+bool hookModuleImportForSlots(std::vector<GraphHookSlot> &slotList,
+                              HMODULE module, const char *symbol,
+                              Function hook, Function &original) {
+    original = reinterpret_cast<Function>(GetProcAddress(module, symbol));
+    return original && replaceMainModuleImportInto(
+        slotList, reinterpret_cast<void *>(original),
+        reinterpret_cast<void *>(hook));
+}
+
+template <typename Function>
 bool hookQtGuiImport(HMODULE qtGui, const char *symbol, Function hook,
                      Function &original) {
-    original = reinterpret_cast<Function>(GetProcAddress(qtGui, symbol));
-    return original && replaceMainModuleImport(
-        reinterpret_cast<void *>(original), reinterpret_cast<void *>(hook));
+    return hookModuleImportForSlots(g_graphHookSlots, qtGui, symbol, hook,
+                                    original);
 }
 
 bool installGraphPainterHooks() {
@@ -1770,6 +1824,333 @@ bool isResourceFolderTree(QAbstractItemView *view) {
             sawResourcesView = true;
     }
     return sawPathPanel && sawResourcesView;
+}
+
+bool isAssetPreviewView(QAbstractItemView *view) {
+    if (!view || !view->model())
+        return false;
+    // Painter uses the same native preview popup for the resource shelf and
+    // for the generator/filter/material/shader pickers.  Picker views do not
+    // have the shelf's "resources" object name, so ancestry is the stable
+    // discriminator for them.
+    if (isResourcePickerView(view))
+        return true;
+    const QString className =
+        QString::fromLatin1(view->metaObject()->className());
+    if (view->objectName() == QStringLiteral("resources") &&
+        className == QStringLiteral("Alg::ResourceListView"))
+        return true;
+    return isDesignerResourceList(view);
+}
+
+QString assetPreviewDisplayAt(QAbstractItemView *view,
+                              const QPoint &globalPosition) {
+    if (!view || !view->viewport())
+        return {};
+    const QPoint viewportPosition =
+        view->viewport()->mapFromGlobal(globalPosition);
+    const QModelIndex index = view->indexAt(viewportPosition);
+    if (!index.isValid())
+        return {};
+    const QVariant value = index.data(Qt::DisplayRole);
+    if (auto *styled = qobject_cast<QStyledItemDelegate *>(
+            view->itemDelegate())) {
+        const QString rendered = styled->displayText(value, QLocale()).trimmed();
+        if (!rendered.isEmpty())
+            return rendered;
+    }
+    return value.toString().trimmed();
+}
+
+QString assetPreviewRawDisplayAt(QAbstractItemView *view,
+                                 const QPoint &globalPosition) {
+    if (!view || !view->viewport())
+        return {};
+    const QPoint viewportPosition =
+        view->viewport()->mapFromGlobal(globalPosition);
+    const QModelIndex index = view->indexAt(viewportPosition);
+    if (!index.isValid())
+        return {};
+    return index.data(Qt::DisplayRole).toString().trimmed();
+}
+
+QAbstractItemView *resourceListViewFromAncestry(QWidget *widget) {
+    if (!widget)
+        return nullptr;
+    for (QObject *current = widget; current;
+         current = current->parent()) {
+        if (auto *view = qobject_cast<QAbstractItemView *>(current)) {
+            if (isAssetPreviewView(view))
+                return view;
+        }
+    }
+    return nullptr;
+}
+
+void clearAssetTooltipContext() {
+    g_assetTooltipContext = AssetTooltipContext{};
+}
+
+bool assetTooltipContextStillMatches(const AssetTooltipContext &context) {
+    if (!g_enabled || !context.isValid() || !context.view->viewport())
+        return false;
+    if (!context.view->isVisible() || !context.view->viewport()->isVisible())
+        return false;
+    const QPoint viewportPosition =
+        context.view->viewport()->mapFromGlobal(QCursor::pos());
+    return context.view->indexAt(viewportPosition) == context.index;
+}
+
+QString assetTooltipTextWithTranslation(const QString &text,
+                                        const QString &source,
+                                        const QString &translation) {
+    if (text.isEmpty() || source.isEmpty() || translation.isEmpty())
+        return text;
+    QString adjusted = text;
+    if (!Qt::mightBeRichText(text)) {
+        const int sourcePosition = adjusted.indexOf(source);
+        if (sourcePosition >= 0) {
+            adjusted.insert(sourcePosition + source.size(),
+                            QLatin1Char('\n') + translation);
+            return adjusted;
+        }
+        return adjusted + QLatin1Char('\n') + translation;
+    }
+
+    const QString escapedSource = source.toHtmlEscaped();
+    const QString escapedTranslation = translation.toHtmlEscaped();
+    const int sourcePosition = adjusted.indexOf(
+        escapedSource, 0, Qt::CaseSensitive);
+    if (sourcePosition >= 0) {
+        adjusted.insert(sourcePosition + escapedSource.size(),
+                        QStringLiteral("<br/>") + escapedTranslation);
+        return adjusted;
+    }
+
+    int fallbackPosition = adjusted.lastIndexOf(
+        QStringLiteral("</body>"), -1, Qt::CaseInsensitive);
+    if (fallbackPosition < 0) {
+        fallbackPosition = adjusted.lastIndexOf(
+            QStringLiteral("</html>"), -1, Qt::CaseInsensitive);
+    }
+    const QString fallback = QStringLiteral("<br/>") + escapedTranslation;
+    if (fallbackPosition >= 0)
+        adjusted.insert(fallbackPosition, fallback);
+    else
+        adjusted += fallback;
+    return adjusted;
+}
+
+bool injectAssetTranslationIntoLabel(QLabel *label,
+                                     const AssetTooltipContext &context,
+                                     bool allowHeightGrowth,
+                                     QEvent::Type triggerType) {
+    if (!label || !assetTooltipContextStillMatches(context))
+        return false;
+    const int beforeWidth = label->width();
+    const int beforeHeight = label->height();
+    QSize beforeHint = label->sizeHint();
+    const bool containsOurTranslation =
+        label->property("sp_asset_preview_source").toString() ==
+            context.source &&
+        label->property("sp_asset_preview_translation").toString() ==
+            context.translation &&
+        label->text().contains(context.translation);
+    if (containsOurTranslation) {
+        label->setProperty("sp_asset_preview_translation", context.translation);
+        // Painter's first useful event can be Paint. The translation may
+        // therefore already exist by the time Show arrives, while the widget
+        // still has its cached native height. Complete the pending growth
+        // before allowing that paint/show event to continue.
+        if (allowHeightGrowth) {
+            if (!label->property(
+                    "sp_asset_preview_original_min_height").isValid())
+                label->setProperty("sp_asset_preview_original_min_height",
+                                   label->minimumHeight());
+            label->setMinimumHeight(beforeHint.height());
+            if (label->height() != beforeHint.height())
+                label->resize(label->width(), beforeHint.height());
+        }
+        tooltipDiag(QStringLiteral(
+            "GEOMETRY existing event=%1 size=%2x%3 hint=%4x%5 final=%6x%7 "
+            "lines=%8")
+                        .arg(int(triggerType))
+                        .arg(beforeWidth)
+                        .arg(beforeHeight)
+                        .arg(beforeHint.width())
+                        .arg(beforeHint.height())
+                        .arg(label->width())
+                        .arg(label->height())
+                        .arg(label->text().count(QLatin1Char('\n')) +
+                             label->text().count(QStringLiteral("<br"),
+                                                 Qt::CaseInsensitive) + 1));
+        return true;
+    }
+    // A minimum height installed by the previous native refresh also clamps
+    // sizeHint(). Temporarily restore Painter's original minimum before
+    // measuring the fresh English content, otherwise every mouse event adds
+    // another line (333, 349, 365, ...).
+    const QVariant savedOriginalMinimum = label->property(
+        "sp_asset_preview_original_min_height");
+    const int lockedMinimum = label->minimumHeight();
+    if (savedOriginalMinimum.isValid()) {
+        label->setMinimumHeight(savedOriginalMinimum.toInt());
+        beforeHint = label->sizeHint();
+    }
+    const QString adjusted = assetTooltipTextWithTranslation(
+        label->text(), context.source, context.translation);
+    if (adjusted == label->text()) {
+        if (savedOriginalMinimum.isValid())
+            label->setMinimumHeight(lockedMinimum);
+        return false;
+    }
+    label->setProperty("sp_asset_preview_translation", context.translation);
+    label->setProperty("sp_asset_preview_source", context.source);
+    label->setText(adjusted);
+    const QSize adjustedHint = label->sizeHint();
+    // QTipLabel caches its English-only sizeHint. After setText(), that stale
+    // hint can still report the native two-line height and clip Painter's
+    // metadata row. Reserve one explicit font line before the first paint,
+    // while preserving the native width and every byte of native rich text.
+    if (allowHeightGrowth) {
+        label->ensurePolished();
+        // After setText(), this hint is the stable natural height of the
+        // complete image + English + Chinese + native metadata document.
+        // QTipLabel's pre-injection hint is contaminated by its current
+        // window height, so adding a line to that value grows forever.
+        const int requiredHeight = adjustedHint.height();
+        if (!label->property("sp_asset_preview_original_min_height").isValid())
+            label->setProperty("sp_asset_preview_original_min_height",
+                               label->minimumHeight());
+        // Painter rewrites the native tooltip on every mouse move and calls
+        // resize() with the English-only height. A temporary minimum keeps
+        // those legitimate refreshes from shrinking the visible popup; it is
+        // restored as soon as QTipLabel hides.
+        label->setMinimumHeight(requiredHeight);
+        if (label->height() != requiredHeight)
+            label->resize(label->width(), requiredHeight);
+    }
+    tooltipDiag(QStringLiteral(
+        "GEOMETRY injected event=%1 grow=%2 before=%3x%4 beforeHint=%5x%6 "
+        "adjustedHint=%7x%8 final=%9x%10 lines=%11")
+                    .arg(int(triggerType))
+                    .arg(allowHeightGrowth ? 1 : 0)
+                    .arg(beforeWidth)
+                    .arg(beforeHeight)
+                    .arg(beforeHint.width())
+                    .arg(beforeHint.height())
+                    .arg(adjustedHint.width())
+                    .arg(adjustedHint.height())
+                    .arg(label->width())
+                    .arg(label->height())
+                    .arg(adjusted.count(QLatin1Char('\n')) +
+                         adjusted.count(QStringLiteral("<br"),
+                                        Qt::CaseInsensitive) + 1));
+    tooltipDiag(QStringLiteral("INJECT QTipLabel source=[%1] translation=[%2]")
+                    .arg(context.source, context.translation));
+    return true;
+}
+
+void restoreAssetTooltipDecoration(QWidget *popup) {
+    if (!popup)
+        return;
+    if (auto *label = qobject_cast<QLabel *>(popup)) {
+        if (QString::fromLatin1(label->metaObject()->className()) ==
+            QStringLiteral("QTipLabel")) {
+            const QVariant originalMinimum = label->property(
+                "sp_asset_preview_original_min_height");
+            if (originalMinimum.isValid())
+                label->setMinimumHeight(originalMinimum.toInt());
+            label->setProperty("sp_asset_preview_original_min_height",
+                               QVariant());
+            label->setProperty("sp_asset_preview_translation", QVariant());
+            label->setProperty("sp_asset_preview_source", QVariant());
+        }
+    }
+    const auto injectedLabels = popup->findChildren<QLabel *>(
+        QStringLiteral("sp_asset_preview_translation"),
+        Qt::FindDirectChildrenOnly);
+    for (QLabel *injected : injectedLabels) {
+        if (popup->layout())
+            popup->layout()->removeWidget(injected);
+        injected->deleteLater();
+    }
+}
+
+void restoreAllAssetTooltipDecorations() {
+    for (QWidget *widget : QApplication::topLevelWidgets())
+        restoreAssetTooltipDecoration(widget);
+}
+
+bool injectAssetTranslationIntoCustomPreview(
+    QWidget *popup, const AssetTooltipContext &context) {
+    if (!popup || popup->windowType() != Qt::ToolTip ||
+        !assetTooltipContextStillMatches(context))
+        return false;
+    if (auto *existing = popup->findChild<QLabel *>(
+            QStringLiteral("sp_asset_preview_translation"))) {
+        existing->setText(context.translation);
+        return true;
+    }
+    auto *layout = qobject_cast<QBoxLayout *>(popup->layout());
+    if (!layout)
+        return false;
+    auto *label = new QLabel(context.translation, popup);
+    label->setObjectName(QStringLiteral("sp_asset_preview_translation"));
+    label->setWordWrap(true);
+    label->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    layout->addWidget(label);
+    popup->adjustSize();
+    tooltipDiag(QStringLiteral("INJECT custom class=%1 source=[%2] translation=[%3]")
+                    .arg(QString::fromLatin1(popup->metaObject()->className()),
+                         context.source, context.translation));
+    return true;
+}
+
+bool isAssetPreviewCandidate(QWidget *widget) {
+    if (!widget)
+        return false;
+    if (QString::fromLatin1(widget->metaObject()->className()) ==
+        QStringLiteral("QTipLabel"))
+        return true;
+    return widget->isWindow() && widget->windowType() == Qt::ToolTip;
+}
+
+bool injectAssetTranslationIntoPreview(QWidget *widget,
+                                       bool allowHeightGrowth,
+                                       QEvent::Type triggerType) {
+    const AssetTooltipContext context = g_assetTooltipContext;
+    if (!context.isValid() || !isAssetPreviewCandidate(widget))
+        return false;
+    tooltipDiag(QStringLiteral(
+        "PREVIEW CANDIDATE class=%1 name=%2 type=%3 window=%4 visible=%5 "
+        "age=%6 match=%7 layout=%8")
+                    .arg(widget
+                             ? QString::fromLatin1(
+                                   widget->metaObject()->className())
+                             : QStringLiteral("<null>"),
+                         widget ? widget->objectName() : QString())
+                    .arg(widget ? int(widget->windowType()) : -1)
+                    .arg(widget && widget->isWindow() ? 1 : 0)
+                    .arg(widget && widget->isVisible() ? 1 : 0)
+                    .arg(QDateTime::currentMSecsSinceEpoch() - context.createdAt)
+                    .arg(assetTooltipContextStillMatches(context) ? 1 : 0)
+                    .arg(widget && widget->layout()
+                             ? QString::fromLatin1(
+                                   widget->layout()->metaObject()->className())
+                             : QStringLiteral("<none>")));
+    if (!assetTooltipContextStillMatches(context))
+        return false;
+    bool injected = false;
+    if (auto *label = qobject_cast<QLabel *>(widget)) {
+        if (QString::fromLatin1(label->metaObject()->className()) ==
+            QStringLiteral("QTipLabel"))
+            injected = injectAssetTranslationIntoLabel(
+                label, context, allowHeightGrowth, triggerType);
+    } else if (widget && widget->isWindow()) {
+        injected = injectAssetTranslationIntoCustomPreview(widget, context);
+    }
+    return injected;
 }
 
 void translateMenu(QMenu *menu) {
@@ -2879,6 +3260,27 @@ public:
 protected:
     bool eventFilter(QObject *object, QEvent *event) override {
         const auto type = event->type();
+        // Show covers a newly created tooltip. Painter reuses one visible
+        // QTipLabel for later assets: QLabel::setText posts layout/update
+        // work before the next paint, so inject there to avoid one frame of
+        // untranslated content. Paint remains only as a compatibility
+        // fallback for host versions that skip those preparation events.
+        if ((type == QEvent::Show || type == QEvent::Polish ||
+             type == QEvent::ShowToParent ||
+             type == QEvent::LayoutRequest ||
+             type == QEvent::UpdateRequest || type == QEvent::Paint) &&
+            g_enabled) {
+            QWidget *candidate = qobject_cast<QWidget *>(object);
+            if (isAssetPreviewCandidate(candidate)) {
+                const bool allowHeightGrowth =
+                    type == QEvent::Show || type == QEvent::Polish ||
+                    type == QEvent::ShowToParent ||
+                    type == QEvent::LayoutRequest ||
+                    type == QEvent::Paint;
+                injectAssetTranslationIntoPreview(candidate,
+                                                  allowHeightGrowth, type);
+            }
+        }
         // 快捷键识别：只“看见”组合键，动作延后一拍执行且不吞按键，
         // 避免在事件过滤器中同步弹出模态窗口，也不抢占宿主同名快捷键。
         if (type == QEvent::ShortcutOverride) {
@@ -2928,6 +3330,10 @@ protected:
             g_enableShortcutArmed = 0;
             return false;
         }
+        // Cleanup must run even after translation has been disabled; otherwise
+        // a reused QTipLabel can retain the resource preview's minimum height.
+        if (type == QEvent::Hide)
+            restoreAssetTooltipDecoration(qobject_cast<QWidget *>(object));
         if (!g_enabled)
             return false;
         if (type == QEvent::Leave || type == QEvent::Hide) {
@@ -2936,6 +3342,10 @@ protected:
                 QToolTip::hideText();
                 g_originalTooltipOwner.clear();
             }
+            if (widget && g_assetTooltipContext.view &&
+                (widget == g_assetTooltipContext.view ||
+                 widget == g_assetTooltipContext.view->viewport()))
+                clearAssetTooltipContext();
         }
         if (type == QEvent::MouseButtonPress) {
             auto *mouse = static_cast<QMouseEvent *>(event);
@@ -3070,6 +3480,42 @@ protected:
         if (type == QEvent::ToolTip) {
             auto *widget = qobject_cast<QWidget *>(object);
             auto *help = static_cast<QHelpEvent *>(event);
+            if (QAbstractItemView *assetView =
+                    resourceListViewFromAncestry(widget)) {
+                const QString english =
+                    assetPreviewRawDisplayAt(assetView, help->globalPos());
+                const QString display =
+                    assetPreviewDisplayAt(assetView, help->globalPos());
+                if (!english.isEmpty() && !display.isEmpty() &&
+                    display != english && containsCjk(display)) {
+                    // Never consume Painter's ToolTip event. The host must be
+                    // free to refresh its native preview image and metadata;
+                    // we only remember the matching item and append Chinese
+                    // during the preview widget's own update events below.
+                    const QPoint viewportPosition =
+                        assetView->viewport()->mapFromGlobal(help->globalPos());
+                    const QModelIndex index =
+                        assetView->indexAt(viewportPosition);
+                    if (index.isValid()) {
+                        const quint64 generation = ++g_assetTooltipGeneration;
+                        g_assetTooltipContext = {
+                            assetView,
+                            QPersistentModelIndex(index),
+                            english,
+                            display,
+                            help->globalPos(),
+                            QDateTime::currentMSecsSinceEpoch(),
+                            generation,
+                        };
+                        tooltipDiag(QStringLiteral(
+                            "ASSET CONTEXT generation=%1 source=[%2] translation=[%3]")
+                                        .arg(generation)
+                                        .arg(english, display));
+                    }
+                } else {
+                    clearAssetTooltipContext();
+                }
+            }
             // 插件自己的“更改翻译”弹窗放行原生 ToolTip（自定义 ID 的
             // 悬停注释），其余控件按原有规则抑制。
             const bool isPluginDialogWidget =
@@ -3270,6 +3716,10 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_add_translation(
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enabled(int enabled) {
     g_enabled = enabled != 0;
+    if (!g_enabled) {
+        clearAssetTooltipContext();
+        restoreAllAssetTooltipDecorations();
+    }
     if (g_assetRowFilter)
         g_assetRowFilter->setActive(g_enabled);
     if (g_enabled) {
@@ -3405,5 +3855,7 @@ sp_delegate_uninstall_ui(void *applicationPointer) {
         delete g_filter;
         g_filter = nullptr;
     }
+    clearAssetTooltipContext();
+    restoreAllAssetTooltipDecorations();
     restoreAssetDelegates();
 }

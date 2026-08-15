@@ -185,6 +185,46 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("_release_native_delegate()", python)
         self.assertIn("FreeLibrary", python)
 
+    def test_asset_preview_translation_uses_tooltip_context_not_iat_hook(self):
+        cpp = CPP_SOURCE.read_text(encoding="utf-8")
+        for marker in (
+            "struct AssetTooltipContext",
+            "QPersistentModelIndex",
+            "assetTooltipContextStillMatches",
+            "assetTooltipTextWithTranslation",
+            "source.toHtmlEscaped()",
+            "injectAssetTranslationIntoPreview",
+            "isAssetPreviewView",
+            "isResourcePickerView(view)",
+            "sp_asset_preview_translation",
+            "QEvent::ToolTip",
+            "QEvent::Show",
+            "QEvent::LayoutRequest",
+            "QEvent::UpdateRequest",
+            "allowHeightGrowth",
+            "requiredHeight = adjustedHint.height()",
+            "sp_asset_preview_original_min_height",
+            "label->setMinimumHeight(requiredHeight)",
+            "restoreAssetTooltipDecoration",
+            "restoreAllAssetTooltipDecorations",
+            "Qt::FindDirectChildrenOnly",
+            "containsOurTranslation",
+            "label->setMinimumHeight(lockedMinimum)",
+        ):
+            self.assertIn(marker, cpp)
+        for obsolete in (
+            "g_pendingTooltipEnglish",
+            "g_pendingTooltipDisplay",
+            "hookedTooltipShowText",
+            "installTooltipShowTextHooks",
+            "insertSuffixAfterEnglish",
+            'QStringLiteral("\\n\\n中文：")',
+            'QStringLiteral("中文：%1")',
+            "hasVisibleInjectedAssetTooltip",
+            "ASSET SUPPRESS duplicate",
+        ):
+            self.assertNotIn(obsolete, cpp)
+
     def test_extractor_rejects_links_and_special_files(self):
         source = EXTRACTOR_SOURCE.read_text(encoding="utf-8")
         self.assertIn("archive_entry_hardlink(entry)", source)

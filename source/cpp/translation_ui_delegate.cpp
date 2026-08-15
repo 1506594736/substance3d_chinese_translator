@@ -493,19 +493,71 @@ bool isInsideLayersPanel(QWidget *widget) {
     return false;
 }
 
+QObject *painterElidedLabelOwner(QObject *object) {
+    int depth = 0;
+    for (QObject *parent = object ? object->parent() : nullptr;
+         parent && depth < 4; parent = parent->parent(), ++depth) {
+        if (QString::fromLatin1(parent->metaObject()->className()) ==
+            QStringLiteral("Alg::ElidedLabel"))
+            return parent;
+    }
+    return nullptr;
+}
+
+// Alg::ElidedLabel keeps the complete Painter parameter label in its "text"
+// property and lets its child QLabel draw an elided version.  Reading the
+// child text alone therefore loses dictionary lookup information whenever a
+// narrow panel produces (for example) "Specular edg…".
+QString sourceFromPainterElidedLabel(QObject *object,
+                                     const QString &displayedText) {
+    const QString displayed = displayedText.trimmed();
+    QString prefix = displayed;
+    if (prefix.endsWith(QChar(0x2026)))
+        prefix.chop(1);
+    else if (prefix.endsWith(QLatin1String("...")))
+        prefix.chop(3);
+    else
+        return {};
+    prefix = prefix.trimmed();
+    if (prefix.isEmpty() || !object)
+        return {};
+
+    int depth = 0;
+    for (QObject *parent = object->parent(); parent && depth < 4;
+         parent = parent->parent(), ++depth) {
+        const QString className =
+            QString::fromLatin1(parent->metaObject()->className());
+        if (className != QStringLiteral("Alg::ElidedLabel") &&
+            className != QStringLiteral("Alg::EditLabel"))
+            continue;
+        const QString full = parent->property("text").toString().trimmed();
+        // Do not treat an unrelated parent text property as the label's
+        // source. Painter's complete value must extend the visible prefix.
+        if (full.size() > prefix.size() &&
+            full.startsWith(prefix, Qt::CaseInsensitive))
+            return full;
+    }
+    return {};
+}
+
 QString sourceForObject(QObject *object, const QString &displayedText) {
     QString displayed = displayedText.trimmed();
     displayed.remove(u'&');
     if (!object)
         return displayed;
+    // This must run before the per-object source check: a freshly created
+    // child QLabel has no saved source yet, which is exactly when Painter may
+    // already have elided its displayed text.
+    const QString fullElidedSource =
+        sourceFromPainterElidedLabel(object, displayed);
     const QString stored = object->property(kSourceProperty).toString();
     if (stored.isEmpty())
-        return displayed;
+        return fullElidedSource.isEmpty() ? displayed : fullElidedSource;
     if (displayed == stored || g_translations.value(stored) == displayed ||
         g_originals.value(displayed) == stored)
         return stored;
     // Painter reused the object for a different value; ignore stale metadata.
-    return displayed;
+    return fullElidedSource.isEmpty() ? displayed : fullElidedSource;
 }
 
 bool shouldExcludeLayersPanel(QWidget *widget) {
@@ -2275,7 +2327,17 @@ void translateWidget(QWidget *widget) {
                                           translationControlId(widget, source));
         if (!result.isNull() && label->text() != result) {
             label->setProperty(kSourceProperty, source);
-            label->setText(result);
+            if (QObject *owner = painterElidedLabelOwner(label)) {
+                // Let Painter's owner update its child QLabel and reapply
+                // elision at the current panel width.
+                owner->setProperty("text", result);
+                if (auto *ownerWidget = qobject_cast<QWidget *>(owner)) {
+                    ownerWidget->updateGeometry();
+                    ownerWidget->update();
+                }
+            } else {
+                label->setText(result);
+            }
         }
         return;
     }
@@ -3013,8 +3075,19 @@ void restoreTranslatedWidget(QWidget *widget) {
         return;
     if (auto *button = qobject_cast<QAbstractButton *>(widget))
         button->setText(source);
-    else if (auto *label = qobject_cast<QLabel *>(widget))
-        label->setText(source);
+    else if (auto *label = qobject_cast<QLabel *>(widget)) {
+        if (QObject *owner = painterElidedLabelOwner(label)) {
+            // Restore through the owner rather than writing the private child
+            // QLabel directly, so its original right-elision is reinstated.
+            owner->setProperty("text", source);
+            if (auto *ownerWidget = qobject_cast<QWidget *>(owner)) {
+                ownerWidget->updateGeometry();
+                ownerWidget->update();
+            }
+        } else {
+            label->setText(source);
+        }
+    }
     else if (auto *group = qobject_cast<QGroupBox *>(widget))
         group->setTitle(source);
     else if (auto *dock = qobject_cast<QDockWidget *>(widget))

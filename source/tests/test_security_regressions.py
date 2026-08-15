@@ -225,6 +225,23 @@ class SecurityRegressionTests(unittest.TestCase):
         ):
             self.assertNotIn(obsolete, cpp)
 
+    def test_elided_painter_parameter_labels_use_parent_text_property(self):
+        cpp = CPP_SOURCE.read_text(encoding="utf-8")
+        for marker in (
+            "sourceFromPainterElidedLabel",
+            "painterElidedLabelOwner",
+            'QStringLiteral("Alg::ElidedLabel")',
+            'QStringLiteral("Alg::EditLabel")',
+            'parent->property("text")',
+            "full.startsWith(prefix, Qt::CaseInsensitive)",
+            "This must run before the per-object source check",
+            "return fullElidedSource.isEmpty() ? displayed : fullElidedSource;",
+            'owner->setProperty("text", result)',
+            'owner->setProperty("text", source)',
+            "original right-elision is reinstated",
+        ):
+            self.assertIn(marker, cpp)
+
     def test_extractor_rejects_links_and_special_files(self):
         source = EXTRACTOR_SOURCE.read_text(encoding="utf-8")
         self.assertIn("archive_entry_hardlink(entry)", source)

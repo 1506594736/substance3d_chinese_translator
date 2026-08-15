@@ -28,6 +28,7 @@ named ``substance3d_chinese_translator`` under either:
 
 import ast
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -65,6 +66,24 @@ RELEASE_FILES = {
     "translations/official_assets_zh.json": TRANSLATIONS / "official_assets_zh.json",
 }
 RELEASE_FILE_ALLOWLIST = frozenset(RELEASE_FILES)
+
+
+def _build_environment():
+    """Return an environment with Windows variable names de-duplicated.
+
+    MSBuild treats ``Path`` and ``PATH`` as the same key, while a process can
+    inherit both spellings.  Passing that environment through unchanged makes
+    native compilation fail before the compiler starts.
+    """
+    result = {}
+    seen = set()
+    for key, value in os.environ.items():
+        normalized = key.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result[key] = value
+    return result
 
 
 def _check_required_files() -> None:
@@ -177,11 +196,13 @@ def _build_native() -> None:
             "-A", "x64",
         ],
         check=True,
+        env=_build_environment(),
     )
     print("编译 C++ 原生模块（Release）……")
     subprocess.run(
         [cmake, "--build", str(CPP_BUILD), "--config", "Release"],
         check=True,
+        env=_build_environment(),
     )
     missing_outputs = [path for path in (DELEGATE_QT6_DLL, DELEGATE_QT5_DLL,
                                          EXTRACTOR_EXE)

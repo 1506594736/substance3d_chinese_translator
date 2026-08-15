@@ -462,7 +462,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "translator_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "1.3.4"
+PLUGIN_VERSION = "1.3.5"
 PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -601,7 +601,6 @@ def is_safe(obj):
 # 2. JSON translation packages
 # ==========================================
 TRANSLATE_DICT = {}
-TRANSLATE_SOURCE_FILES = {}
 ID_TRANSLATE_DICTS = {}
 
 
@@ -612,7 +611,6 @@ def load_translation_packages():
     alphabetically; a later package intentionally overrides duplicate strings.
     """
     TRANSLATE_DICT.clear()
-    TRANSLATE_SOURCE_FILES.clear()
     ID_TRANSLATE_DICTS.clear()
     plugin_dir = TRANSLATIONS_DIR
     if not os.path.isdir(plugin_dir):
@@ -648,14 +646,12 @@ def load_translation_packages():
                     if (isinstance(source, str) and isinstance(target, str)
                             and source and target):
                         ID_TRANSLATE_DICTS[source] = target
-                        TRANSLATE_SOURCE_FILES[source] = path
                         loaded += 1
             else:
                 for source, target in entries.items():
                     if (isinstance(source, str) and isinstance(target, str)
                             and source and target):
                         TRANSLATE_DICT[source] = target
-                        TRANSLATE_SOURCE_FILES[source] = path
                         loaded += 1
             print(f">>> 已加载翻译包 {name}: {loaded} 条")
         except Exception as exc:
@@ -687,8 +683,6 @@ def _load_native_delegate():
             ctypes.c_wchar_p, ctypes.c_wchar_p
         ]
         dll.sp_delegate_add_id_translation.restype = None
-        dll.sp_delegate_set_translation_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
-        dll.sp_delegate_set_translation_path.restype = None
         dll.sp_delegate_set_fallback_path.argtypes = [ctypes.c_wchar_p]
         dll.sp_delegate_set_fallback_path.restype = None
         dll.sp_delegate_set_id_path.argtypes = [ctypes.c_wchar_p]
@@ -722,8 +716,8 @@ def _load_native_delegate():
         dll.sp_delegate_uninstall_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_uninstall_ui.restype = None
         api_version = dll.sp_delegate_api_version()
-        if api_version != 13:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 13，实际 {api_version}")
+        if api_version != 14:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 14，实际 {api_version}")
             return None
         dll.sp_delegate_build_id.restype = ctypes.c_wchar_p
         dll.sp_delegate_build_id.argtypes = []
@@ -898,49 +892,6 @@ def _is_untranslated_asset_name(name):
         return False
     translated = TRANSLATE_DICT.get(source)
     return not isinstance(translated, str) or not translated.strip()
-
-
-# ---------------------------------------------------------------
-# Designer 资源库控件识别（与 C++ 引擎同一套规则）
-# ---------------------------------------------------------------
-def _class_name(obj):
-    try:
-        name = obj.metaObject().className()
-    except Exception:
-        return ""
-    if isinstance(name, bytes):
-        return name.decode("utf-8", errors="replace")
-    return str(name)
-
-
-def _is_resource_list(view):
-    try:
-        if _class_name(view) != (
-                "Pfx::DataBase::ResourceTableWidget::CustomListView"):
-            return False
-        model = view.model()
-        return model is not None and _class_name(model) == (
-            "Pfx::DataBase::ResourcesListModel")
-    except Exception:
-        return False
-
-
-def _is_library_tree(view):
-    try:
-        if view.objectName() != "mTreeWidget":
-            return False
-        model = view.model()
-        if model is None or _class_name(model) != "QTreeModel":
-            return False
-        parent = view.parent()
-        while parent is not None:
-            if _class_name(parent) == (
-                    "Pfx::Editor::Components::Shelf::QueryExplorerWidget"):
-                return True
-            parent = parent.parent()
-    except Exception:
-        pass
-    return False
 
 
 def _tooltip(text):
@@ -2060,14 +2011,15 @@ def _toggle_enable_shortcut():
 
 _shortcut_callback = None
 _dictionary_reload_callback = None
-@ctypes.CFUNCTYPE(None)
+@ctypes.CFUNCTYPE(ctypes.c_int)
 def _on_native_dictionary_reload():
     """原生层删除词条后，立即复用启动时的词包加载与同步流程。"""
     try:
         load_translation_packages()
-        _sync_native_dictionary()
+        return int(_sync_native_dictionary())
     except Exception as exc:
         print(">>> 原生编辑后的词库重载失败:", exc)
+        return 0
 
 
 def _apply_dictionary_reload_callback(dll):

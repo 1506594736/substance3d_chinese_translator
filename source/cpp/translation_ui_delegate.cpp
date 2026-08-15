@@ -80,7 +80,6 @@ namespace {
 QHash<QString, QString> g_translations;
 QHash<QString, QString> g_originals;
 QHash<QString, QString> g_idTranslations;
-QHash<QString, QString> g_translationPaths;
 QString g_fallbackPath;
 QString g_idTranslationPath;
 QPointer<QWidget> g_originalTooltipOwner;
@@ -123,7 +122,7 @@ qint64 g_lastEnableFireMs = 0;
 bool g_editDialogOpen = false;
 using ShortcutCallback = void (*)(int);
 ShortcutCallback g_shortcutCallback = nullptr;
-using DictionaryReloadCallback = void (*)();
+using DictionaryReloadCallback = int (*)();
 DictionaryReloadCallback g_dictionaryReloadCallback = nullptr;
 
 bool shortcutMatches(const QKeySequence &target, int key,
@@ -2851,8 +2850,7 @@ bool saveTranslation(const QString &source, const QString &target,
                      QString *error,
                      const QString &fixedPath = QString()) {
     const QString translationPath = fixedPath.isEmpty()
-        ? g_translationPaths.value(source, g_fallbackPath)
-        : fixedPath;
+        ? g_fallbackPath : fixedPath;
     if (translationPath.isEmpty()) {
         if (error)
             *error = QStringLiteral("未配置可写入的翻译文件。");
@@ -2920,7 +2918,6 @@ bool saveTranslation(const QString &source, const QString &target,
             *error = output.errorString();
         return false;
     }
-    g_translationPaths.insert(source, translationPath);
     return true;
 }
 
@@ -2994,20 +2991,6 @@ void refreshTranslatedViews() {
             view->viewport()->update();
         if (widget->isVisible())
             translateWidget(widget);
-    }
-}
-
-// Ctrl+右键编辑完成后，只重绘触发编辑的控件（资产列表则重绘其视口）。
-// 不必为一个已删除的用户覆盖项遍历整个宿主界面。
-void refreshEditedTranslationTarget(QWidget *widget) {
-    for (QWidget *current = widget; current;
-         current = current->parentWidget()) {
-        translateWidget(current);
-        current->update();
-        if (auto *view = qobject_cast<QAbstractItemView *>(current)) {
-            view->viewport()->update();
-            return;
-        }
     }
 }
 
@@ -3387,9 +3370,15 @@ void editTranslation(const QString &source, const QString &uniqueId,
         if (removed) {
             // 词包合并只由 Python 实现；回调会执行既有的加载与同步流程，
             // 避免在原生层重复词包优先级规则。
-            if (g_dictionaryReloadCallback)
-                g_dictionaryReloadCallback();
-            refreshEditedTranslationTarget(parent);
+            const bool reloadOk = g_dictionaryReloadCallback &&
+                                  g_dictionaryReloadCallback() == 1;
+            if (!reloadOk) {
+                showHostMessage(parent, QStringLiteral("词库重载失败"),
+                                QStringLiteral("已从 user_added_zh.json 删除该自定义词条，但当前界面未能重载词库。请重新加载插件。"),
+                                QMessageBox::Warning);
+                return;
+            }
+            refreshTranslatedViews();
             showHostMessage(parent, QStringLiteral("提示"),
                             QStringLiteral("已从 user_added_zh.json 删除该自定义词条，并已恢复默认翻译。"));
         } else {
@@ -3755,19 +3744,11 @@ void scanVisibleWidgets() {
 
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 13; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 14; }
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
     // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
     return L"20260814-sp-sd-cjk-search";
-}
-
-extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_translation_path(
-    const wchar_t *source, const wchar_t *path) {
-    if (!source || !path)
-        return;
-    g_translationPaths.insert(QString::fromWCharArray(source),
-                              QString::fromWCharArray(path));
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_path(
@@ -3784,7 +3765,6 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_clear_translations() {
     g_translations.clear();
     g_originals.clear();
     g_idTranslations.clear();
-    g_translationPaths.clear();
     g_fuzzyResolved.clear();
     g_translationsFolded.clear();
     if (g_assetRowFilter)

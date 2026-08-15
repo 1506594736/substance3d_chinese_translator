@@ -87,6 +87,16 @@ class SecurityRegressionTests(unittest.TestCase):
                 break
         self.assertEqual(metadata["version"], version)
 
+    def test_build_uses_case_deduplicated_environment(self):
+        build = _load_build_module()
+        source = (SOURCE / "cpp" / "build_package.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def _build_environment", source)
+        self.assertIn("key.casefold()", source)
+        self.assertGreaterEqual(source.count("env=_build_environment()"), 2)
+        self.assertIsInstance(build._build_environment(), dict)
+
     def test_update_replaces_release_dictionaries_and_preserves_custom_ones(self):
         namespace = _load_update_validation_namespace()
         self.assertEqual(
@@ -247,14 +257,21 @@ class SecurityRegressionTests(unittest.TestCase):
         python = MODULE_SOURCE.read_text(encoding="utf-8")
         self.assertIn("bool removeFallbackTranslation", cpp)
         self.assertIn("g_dictionaryReloadCallback", cpp)
-        self.assertIn("refreshEditedTranslationTarget(parent)", cpp)
-        self.assertIn("void refreshEditedTranslationTarget", cpp)
+        self.assertIn("refreshTranslatedViews();", cpp)
         self.assertIn("!saveToId && target == source", cpp)
         self.assertIn("translations.remove(source)", cpp)
         self.assertIn("已从 user_added_zh.json 删除该自定义词条", cpp)
         self.assertIn("def _on_native_dictionary_reload", python)
         self.assertIn("load_translation_packages()", python)
         self.assertIn("_sync_native_dictionary()", python)
+
+    def test_translation_source_path_legacy_state_is_removed(self):
+        cpp = CPP_SOURCE.read_text(encoding="utf-8")
+        python = MODULE_SOURCE.read_text(encoding="utf-8")
+        self.assertNotIn("g_translationPaths", cpp)
+        self.assertNotIn("sp_delegate_set_translation_path", cpp)
+        self.assertNotIn("TRANSLATE_SOURCE_FILES", python)
+        self.assertNotIn("sp_delegate_set_translation_path", python)
 
     def test_designer_asset_export_uses_package_api_not_library_widgets(self):
         source = MODULE_SOURCE.read_text(encoding="utf-8")

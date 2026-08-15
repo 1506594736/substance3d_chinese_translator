@@ -123,6 +123,8 @@ qint64 g_lastEnableFireMs = 0;
 bool g_editDialogOpen = false;
 using ShortcutCallback = void (*)(int);
 ShortcutCallback g_shortcutCallback = nullptr;
+using DictionaryReloadCallback = void (*)();
+DictionaryReloadCallback g_dictionaryReloadCallback = nullptr;
 
 bool shortcutMatches(const QKeySequence &target, int key,
                      Qt::KeyboardModifiers modifiers) {
@@ -2922,6 +2924,66 @@ bool saveTranslation(const QString &source, const QString &target,
     return true;
 }
 
+// 将“译文等于原文”作为撤销全局自定义翻译处理。尤其不能把这种恒等映射
+// 留在 user_added_zh.json 中：该文件的加载优先级最高，会遮蔽官方词库。
+bool removeFallbackTranslation(const QString &source, QString *error,
+                               bool *removed) {
+    if (removed)
+        *removed = false;
+    if (g_fallbackPath.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("未配置用户翻译文件。");
+        return false;
+    }
+    QFile existing(g_fallbackPath);
+    if (!existing.exists())
+        return true;
+    if (!existing.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = existing.errorString();
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(existing.readAll(), &parseError);
+    existing.close();
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (error)
+            *error = QStringLiteral("Translation JSON is invalid: %1")
+                         .arg(g_fallbackPath);
+        return false;
+    }
+    QJsonObject root = document.object();
+    if (root.value(QStringLiteral("$schema")).toString() !=
+        QStringLiteral("sp-translation-v1")) {
+        if (error)
+            *error = QStringLiteral("原始翻译文件格式无效：%1")
+                         .arg(g_fallbackPath);
+        return false;
+    }
+    QJsonObject translations =
+        root.value(QStringLiteral("translations")).toObject();
+    if (!translations.contains(source))
+        return true;
+    translations.remove(source);
+    root.insert(QStringLiteral("translations"), translations);
+    QSaveFile output(g_fallbackPath);
+    if (!output.open(QIODevice::WriteOnly)) {
+        if (error)
+            *error = output.errorString();
+        return false;
+    }
+    output.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    if (!output.commit()) {
+        if (error)
+            *error = output.errorString();
+        return false;
+    }
+    if (removed)
+        *removed = true;
+    return true;
+}
+
 void refreshTranslatedViews() {
     if (g_assetRowFilter)
         g_assetRowFilter->translationsChanged();
@@ -2932,6 +2994,20 @@ void refreshTranslatedViews() {
             view->viewport()->update();
         if (widget->isVisible())
             translateWidget(widget);
+    }
+}
+
+// Ctrl+右键编辑完成后，只重绘触发编辑的控件（资产列表则重绘其视口）。
+// 不必为一个已删除的用户覆盖项遍历整个宿主界面。
+void refreshEditedTranslationTarget(QWidget *widget) {
+    for (QWidget *current = widget; current;
+         current = current->parentWidget()) {
+        translateWidget(current);
+        current->update();
+        if (auto *view = qobject_cast<QAbstractItemView *>(current)) {
+            view->viewport()->update();
+            return;
+        }
     }
 }
 
@@ -3293,7 +3369,7 @@ void editTranslation(const QString &source, const QString &uniqueId,
     if (dialogResult != QDialog::Accepted)
         return;
     const QString target = targetEdit->text().trimmed();
-    if (target.isEmpty() || target == current) {
+    if (target.isEmpty()) {
         showHostMessage(parent, QStringLiteral("提示"),
                         QStringLiteral("翻译未改变，未写入词库"));
         return;
@@ -3301,6 +3377,32 @@ void editTranslation(const QString &source, const QString &uniqueId,
 
     QString error;
     const bool saveToId = idCheck->isChecked() && !uniqueId.isEmpty();
+    if (!saveToId && target == source) {
+        bool removed = false;
+        if (!removeFallbackTranslation(source, &error, &removed)) {
+            showHostMessage(parent, QStringLiteral("删除翻译失败"), error,
+                            QMessageBox::Critical);
+            return;
+        }
+        if (removed) {
+            // 词包合并只由 Python 实现；回调会执行既有的加载与同步流程，
+            // 避免在原生层重复词包优先级规则。
+            if (g_dictionaryReloadCallback)
+                g_dictionaryReloadCallback();
+            refreshEditedTranslationTarget(parent);
+            showHostMessage(parent, QStringLiteral("提示"),
+                            QStringLiteral("已从 user_added_zh.json 删除该自定义词条，并已恢复默认翻译。"));
+        } else {
+            showHostMessage(parent, QStringLiteral("提示"),
+                            QStringLiteral("没有可删除的用户自定义词条。"));
+        }
+        return;
+    }
+    if (target == current) {
+        showHostMessage(parent, QStringLiteral("提示"),
+                        QStringLiteral("翻译未改变，未写入词库"));
+        return;
+    }
     if (saveToId) {
         // 保存到专项词库：以完整控件 ID 为键写入 control_ids_zh.json。
         if (!saveTranslation(uniqueId, target, &error,
@@ -3653,7 +3755,7 @@ void scanVisibleWidgets() {
 
 } // namespace
 
-extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 12; }
+extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 13; }
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
     // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
@@ -3734,6 +3836,12 @@ extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_shortcut_callback(
     g_shortcutCallback = reinterpret_cast<ShortcutCallback>(callback);
 }
 
+extern "C" __declspec(dllexport) void __cdecl
+sp_delegate_set_dictionary_reload_callback(void *callback) {
+    g_dictionaryReloadCallback =
+        reinterpret_cast<DictionaryReloadCallback>(callback);
+}
+
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_enable_shortcut(
     const wchar_t *sequence) {
     g_enableShortcut = sequence
@@ -3762,14 +3870,9 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_is_extractable(
         return 0;
     if (g_translations.contains(value))
         return 0;
-    for (auto it = g_idTranslations.cbegin();
-         it != g_idTranslations.cend(); ++it) {
-        const QString id = it.key();
-        const int separator = id.lastIndexOf(QStringLiteral("||"));
-        const QString source = separator >= 0 ? id.mid(separator + 2) : id;
-        if (source == value)
-            return 0;
-    }
+    // ID translations are deliberately scoped to one control.  A matching
+    // label in the asset library is still untranslated unless it is present
+    // in g_translations, so it must remain exportable.
     return 1;
 }
 

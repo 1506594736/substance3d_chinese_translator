@@ -242,6 +242,99 @@ class SecurityRegressionTests(unittest.TestCase):
         ):
             self.assertIn(marker, cpp)
 
+    def test_identity_global_edit_removes_user_override(self):
+        cpp = CPP_SOURCE.read_text(encoding="utf-8")
+        python = MODULE_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("bool removeFallbackTranslation", cpp)
+        self.assertIn("g_dictionaryReloadCallback", cpp)
+        self.assertIn("refreshEditedTranslationTarget(parent)", cpp)
+        self.assertIn("void refreshEditedTranslationTarget", cpp)
+        self.assertIn("!saveToId && target == source", cpp)
+        self.assertIn("translations.remove(source)", cpp)
+        self.assertIn("已从 user_added_zh.json 删除该自定义词条", cpp)
+        self.assertIn("def _on_native_dictionary_reload", python)
+        self.assertIn("load_translation_packages()", python)
+        self.assertIn("_sync_native_dictionary()", python)
+
+    def test_designer_asset_export_uses_package_api_not_library_widgets(self):
+        source = MODULE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            for child in node.body
+            if isinstance(child, ast.FunctionDef)
+            and child.name == "_export_designer_asset_library_names"
+        )
+        implementation = ast.get_source_segment(source, function)
+        for marker in (
+            "sd.getContext()",
+            "getSDApplication()",
+            "getSDGraphDefinitionMgr()",
+            "getGraphDefinitions()",
+            "getDefinitions()",
+            "definition.getLabel()",
+            "getPackageMgr()",
+            "getPackages()",
+            "getChildrenResources(True)",
+            "designer-graph-and-package-api",
+            "ResourcesListModel",
+            "collect_visible_model",
+        ):
+            self.assertIn(marker, implementation)
+        for forbidden in (
+            "_is_library_tree(",
+            "_is_resource_list(",
+            ".clicked.emit(",
+            ".activated.emit(",
+            "fetchMore(",
+        ):
+            self.assertNotIn(forbidden, implementation)
+
+    def test_asset_export_filters_existing_translations_for_both_hosts(self):
+        source = MODULE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        helper = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_is_untranslated_asset_name"
+        )
+        namespace = {
+            "TRANSLATE_DICT": {"Known": "已有中文", "Empty": ""},
+            "_is_extractable": lambda name: name not in {"skip", ""},
+        }
+        exec(compile(ast.Module(body=[helper], type_ignores=[]),
+                     str(MODULE_SOURCE), "exec"), namespace)
+        predicate = namespace["_is_untranslated_asset_name"]
+        self.assertFalse(predicate("Known"))
+        self.assertTrue(predicate("Empty"))
+        self.assertTrue(predicate("New asset"))
+        self.assertFalse(predicate("skip"))
+
+        painter = next(
+            child for node in tree.body if isinstance(node, ast.ClassDef)
+            for child in node.body if isinstance(child, ast.FunctionDef)
+            and child.name == "_export_painter_asset_library_names"
+        )
+        designer = next(
+            child for node in tree.body if isinstance(node, ast.ClassDef)
+            for child in node.body if isinstance(child, ast.FunctionDef)
+            and child.name == "_export_designer_asset_library_names"
+        )
+        for implementation in (
+                ast.get_source_segment(source, painter),
+                ast.get_source_segment(source, designer)):
+            self.assertIn("_is_untranslated_asset_name(name)", implementation)
+
+    def test_asset_export_does_not_treat_id_only_translation_as_global(self):
+        cpp = CPP_SOURCE.read_text(encoding="utf-8")
+        start = cpp.index("sp_delegate_is_extractable")
+        implementation = cpp[start:cpp.index(
+            "sp_delegate_add_translation", start)]
+        self.assertIn("g_translations.contains(value)", implementation)
+        self.assertIn("ID translations are deliberately scoped", implementation)
+        self.assertNotIn("g_idTranslations.cbegin()", implementation)
+
     def test_extractor_rejects_links_and_special_files(self):
         source = EXTRACTOR_SOURCE.read_text(encoding="utf-8")
         self.assertIn("archive_entry_hardlink(entry)", source)

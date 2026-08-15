@@ -707,6 +707,8 @@ def _load_native_delegate():
         dll.sp_delegate_set_edit_button.restype = None
         dll.sp_delegate_set_shortcut_callback.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_set_shortcut_callback.restype = None
+        dll.sp_delegate_set_dictionary_reload_callback.argtypes = [ctypes.c_void_p]
+        dll.sp_delegate_set_dictionary_reload_callback.restype = None
         dll.sp_delegate_set_enable_shortcut.argtypes = [ctypes.c_wchar_p]
         dll.sp_delegate_set_enable_shortcut.restype = None
         dll.sp_delegate_set_translate_layers.argtypes = [ctypes.c_int]
@@ -720,8 +722,8 @@ def _load_native_delegate():
         dll.sp_delegate_uninstall_ui.argtypes = [ctypes.c_void_p]
         dll.sp_delegate_uninstall_ui.restype = None
         api_version = dll.sp_delegate_api_version()
-        if api_version != 12:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 12，实际 {api_version}")
+        if api_version != 13:
+            print(f">>> 原生翻译模块 API 不兼容: 需要 13，实际 {api_version}")
             return None
         dll.sp_delegate_build_id.restype = ctypes.c_wchar_p
         dll.sp_delegate_build_id.argtypes = []
@@ -751,6 +753,7 @@ def _sync_native_dictionary():
     if dll is None:
         return False
     try:
+        _apply_dictionary_reload_callback(dll)
         if HOST == "designer":
             # Always start from an unhooked state; the saved opt-in is applied
             # only after the UI engine has installed successfully.
@@ -884,6 +887,17 @@ def _is_extractable(name):
         return bool(dll.sp_delegate_is_extractable(str(name)))
     except Exception:
         return False
+
+
+def _is_untranslated_asset_name(name):
+    """两端导出共用：只保留尚无有效译文的资产名称。"""
+    if not isinstance(name, str):
+        return False
+    source = name.strip()
+    if not source or not _is_extractable(source):
+        return False
+    translated = TRANSLATE_DICT.get(source)
+    return not isinstance(translated, str) or not translated.strip()
 
 
 # ---------------------------------------------------------------
@@ -1383,7 +1397,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             seen.add(identity)
             try:
                 name = resource_name(resource, identifier)
-                if _is_extractable(name):
+                if _is_untranslated_asset_name(name):
                     names.add(name)
             except Exception as exc:
                 failures.append(str(exc))
@@ -1439,7 +1453,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             QtWidgets.QApplication.restoreOverrideCursor()
 
     def _export_designer_asset_library_names(self):
-        """导出 Designer 界面资源库（资源库树与资源列表）中尚无中文译文的名称。"""
+        """通过 Designer API 导出已注册节点定义及已加载包资源。"""
         initial = os.path.join(TRANSLATIONS_DIR, "untranslated_assets_zh.json")
         output, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "导出 Designer 资源库未翻译名称", initial,
@@ -1449,150 +1463,124 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             return
         output = _ensure_zh_json_suffix(output)
 
-        names = set()
-        failures = []
-
-        def candidate(name):
-            return _is_extractable(name)
-
         QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
         try:
-            library_views = 0
-            item_count = 0
+            names = set()
+            failures = []
+            seen = set()
+            context = sd.getContext()
+            application = context.getSDApplication()
+            graph_manager = application.getSDGraphDefinitionMgr()
+            package_manager = application.getPackageMgr()
+            modules = list(graph_manager.getGraphDefinitions())
+            packages = list(package_manager.getPackages())
+            visible_model_count = 0
+            visible_item_count = 0
 
-            def _walk_model(model, prefix):
-                def visit(index, path, depth):
-                    nonlocal item_count
+            # 资源库面板中的滤镜、生成器等是节点定义，而不是 SDPackage
+            # 资源；从定义管理器读取 label 才能得到用户看到的名称。
+            definition_count = 0
+            for module_number, module in enumerate(modules, 1):
+                try:
+                    definitions = module.getDefinitions()
+                except Exception as exc:
+                    failures.append("读取节点模块失败: %s" % exc)
+                    continue
+                for definition in definitions:
+                    try:
+                        name = str(definition.getLabel()).strip()
+                        identity = "definition:%s:%s" % (
+                            id(module), name
+                        )
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        definition_count += 1
+                        if _is_untranslated_asset_name(name):
+                            names.add(name)
+                    except Exception as exc:
+                        failures.append("读取节点名称失败: %s" % exc)
+                self.status_label.setText(
+                    f"正在读取节点模块 {module_number}/{len(modules)}，"
+                    f"已发现 {len(names)} 个名称"
+                )
+                QtWidgets.QApplication.processEvents()
+
+            # SD 16 can report no public definitions/packages even while its
+            # shelf is populated.  In that case the visible Pfx model is the
+            # only runtime catalog exposed by the host.  Read it directly;
+            # do not synthesize clicks, change the selected category, or scan
+            # files on disk.
+            model_ids = set()
+
+            def collect_visible_model(model):
+                nonlocal visible_item_count
+
+                def visit(index, depth=0):
+                    nonlocal visible_item_count
                     if depth > 64:
                         return
-                    item_count += 1
+                    visible_item_count += 1
                     try:
-                        text = index.data(
-                            ITEM_DATA_ROLE_DISPLAY
-                        )
+                        name = index.data(ITEM_DATA_ROLE_DISPLAY)
                     except Exception:
-                        text = None
-                    if isinstance(text, str):
-                        value = text.strip()
-                        if value and candidate(value):
-                            names.add(value)
+                        name = None
+                    if isinstance(name, str) and _is_untranslated_asset_name(name):
+                        names.add(name.strip())
                     try:
-                        row_count = model.rowCount(index)
+                        rows = model.rowCount(index)
                     except Exception:
                         return
-                    for row in range(row_count):
-                        try:
-                            child = model.index(row, 0, index)
-                        except Exception:
-                            continue
-                        if not child.isValid():
-                            continue
-                        visit(child, path + "/" + str(row), depth + 1)
+                    for row in range(rows):
+                        child = model.index(row, 0, index)
+                        if child.isValid():
+                            visit(child, depth + 1)
 
                 for row in range(model.rowCount()):
-                    try:
-                        root_index = model.index(row, 0)
-                    except Exception:
-                        continue
-                    if root_index.isValid():
-                        visit(root_index, prefix + "/" + str(row), 0)
+                    index = model.index(row, 0)
+                    if index.isValid():
+                        visit(index)
 
-            def _drain_lazy(model):
-                """拉取懒加载模型尚未加载的行（canFetchMore/fetchMore）。"""
-                guard = 0
-                root = QtCore.QModelIndex()
-                while guard < 200:
-                    try:
-                        if not model.canFetchMore(root):
-                            break
-                        model.fetchMore(root)
-                    except Exception:
-                        break
-                    guard += 1
-
-            def _walk_model_chain(model):
-                """遍历视图模型及其代理链（sourceModel），覆盖全部数据。"""
-                visited = set()
-                current = model
-                while current is not None and id(current) not in visited:
-                    visited.add(id(current))
-                    _drain_lazy(current)
-                    _walk_model(current, "")
-                    source_getter = getattr(
-                        current, "sourceModel", None
-                    )
-                    current = (
-                        source_getter() if callable(source_getter)
-                        else None
-                    )
-
-            tree_view = None
-            list_view = None
             for widget in QtWidgets.QApplication.allWidgets():
                 if not isinstance(widget, QtWidgets.QAbstractItemView):
                     continue
-                if _is_library_tree(widget):
-                    tree_view = widget
-                elif _is_resource_list(widget):
-                    list_view = widget
-
-            if tree_view is not None:
-                library_views += 1
                 try:
-                    tree_view.expandAll()
+                    model = widget.model()
                 except Exception:
-                    pass
+                    continue
+                if (model is None or id(model) in model_ids
+                        or not _class_name(model).endswith(
+                            "ResourcesListModel")):
+                    continue
+                model_ids.add(id(model))
+                visible_model_count += 1
+                try:
+                    collect_visible_model(model)
+                except Exception as exc:
+                    failures.append("读取资源库模型失败: %s" % exc)
+
+            for package_number, package in enumerate(packages, 1):
+                try:
+                    resources = package.getChildrenResources(True)
+                except Exception as exc:
+                    failures.append("读取包资源失败: %s" % exc)
+                    continue
+                for resource in resources:
+                    try:
+                        name = str(resource.getIdentifier()).strip()
+                        identity = "%s:%s" % (id(package), name)
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        if _is_untranslated_asset_name(name):
+                            names.add(name)
+                    except Exception as exc:
+                        failures.append("读取资源名称失败: %s" % exc)
+                self.status_label.setText(
+                    f"正在读取已加载资源包 {package_number}/{len(packages)}，"
+                    f"已发现 {len(names)} 个名称"
+                )
                 QtWidgets.QApplication.processEvents()
-                tree_model = tree_view.model()
-                if tree_model is not None:
-                    _walk_model_chain(tree_model)
-                    # 收集树中所有叶节点（分类），逐个选中让右侧列表
-                    # 加载该分类的全部条目。
-                    leaf_indices = []
-
-                    def collect_leaves(index, depth=0):
-                        if depth > 64:
-                            return
-                        if tree_model.rowCount(index) == 0:
-                            leaf_indices.append(index)
-                            return
-                        for row in range(tree_model.rowCount(index)):
-                            collect_leaves(
-                                tree_model.index(row, 0, index),
-                                depth + 1,
-                            )
-
-                    for row in range(tree_model.rowCount()):
-                        collect_leaves(tree_model.index(row, 0))
-                    for leaf_index, index in enumerate(leaf_indices, 1):
-                        try:
-                            tree_view.scrollTo(index)
-                            tree_view.setCurrentIndex(index)
-                            QtWidgets.QApplication.processEvents()
-                            # 直接触发视图的 clicked/activated 信号，让
-                            # Designer 加载该分类条目；比模拟鼠标更干净可靠。
-                            tree_view.clicked.emit(index)
-                            QtWidgets.QApplication.processEvents()
-                            tree_view.activated.emit(index)
-                            QtWidgets.QApplication.processEvents()
-                            if (list_view is not None
-                                    and list_view.model() is not None):
-                                _walk_model_chain(list_view.model())
-                        except Exception as exc:
-                            failures.append(str(exc))
-                        self.status_label.setText(
-                            f"正在读取分类 {leaf_index}/"
-                            f"{len(leaf_indices)}，"
-                            f"已发现 {len(names)} 个名称"
-                        )
-                        QtWidgets.QApplication.processEvents()
-            elif list_view is not None:
-                library_views += 1
-                if list_view.model() is not None:
-                    _walk_model_chain(list_view.model())
-
-            if library_views == 0:
-                failures.append("未找到 Designer 界面中的资源库控件")
 
             existing = _load_existing_translations(output)
             translations = {
@@ -1609,8 +1597,13 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                     "Substance 3D Designer library"
                 ),
                 "extraction": {
-                    "library_view_count": library_views,
-                    "item_count": item_count,
+                    "source": "designer-graph-and-package-api",
+                    "module_count": len(modules),
+                    "definition_count": definition_count,
+                    "package_count": len(packages),
+                    "resource_count": len(seen),
+                    "visible_model_count": visible_model_count,
+                    "visible_item_count": visible_item_count,
                     "term_count": len(names),
                     "failed_count": len(failures),
                 },
@@ -1625,7 +1618,9 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             )
             self.log.appendPlainText(
                 f"资产库导出  {output}  "
-                f"[界面库控件 {library_views}，条目 {item_count}，"
+                f"[节点模块 {len(modules)}，节点 {definition_count}，"
+                f"已加载包 {len(packages)}，资源 {len(seen)}，"
+                f"资源列表 {visible_item_count}，"
                 f"词条 {len(names)}，失败 {len(failures)}]"
             )
         except Exception as exc:
@@ -2064,6 +2059,25 @@ def _toggle_enable_shortcut():
 
 
 _shortcut_callback = None
+_dictionary_reload_callback = None
+@ctypes.CFUNCTYPE(None)
+def _on_native_dictionary_reload():
+    """原生层删除词条后，立即复用启动时的词包加载与同步流程。"""
+    try:
+        load_translation_packages()
+        _sync_native_dictionary()
+    except Exception as exc:
+        print(">>> 原生编辑后的词库重载失败:", exc)
+
+
+def _apply_dictionary_reload_callback(dll):
+    """注册一次持久回调，避免 C++ 端复制 Python 的词包合并规则。"""
+    global _dictionary_reload_callback
+    if _dictionary_reload_callback is None:
+        _dictionary_reload_callback = _on_native_dictionary_reload
+    dll.sp_delegate_set_dictionary_reload_callback(
+        ctypes.cast(_dictionary_reload_callback, ctypes.c_void_p)
+    )
 
 
 @ctypes.CFUNCTYPE(None, ctypes.c_int)
@@ -2097,6 +2111,7 @@ def _clear_native_shortcuts():
         return
     try:
         dll.sp_delegate_set_shortcut_callback(None)
+        dll.sp_delegate_set_dictionary_reload_callback(None)
         dll.sp_delegate_set_enable_shortcut("")
     except Exception as exc:
         print(">>> 清理快捷键配置失败:", exc)

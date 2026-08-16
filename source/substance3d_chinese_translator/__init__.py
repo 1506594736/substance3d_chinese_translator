@@ -2058,7 +2058,9 @@ def _apply_shortcuts():
 
 def _clear_native_shortcuts():
     """卸载时清空原生快捷键配置与回调，避免回调进入已卸载的模块。"""
-    dll = _load_native_delegate()
+    # 初次启动也会先走一次公共清理流程。此处不得为了“清理”而加载
+    # 尚未存在的 DLL，否则随后启动引擎时会再次加载并重复打印构建标识。
+    dll = _native_delegate
     if dll is None:
         return
     try:
@@ -3117,13 +3119,13 @@ def start_plugin():
 
     total_ms = (time.perf_counter() - startup_started) * 1000.0
     print(
-        ">>> Translation plugin startup: "
-        f"entries={len(TRANSLATE_DICT)}, "
-        f"json={json_load_ms:.1f} ms, "
-        f"native_sync={native_sync_ms:.1f} ms, "
-        f"native_ui={native_ui_ms:.1f} ms, "
-        f"total={total_ms:.1f} ms, "
-        f"runtime={'Qt6/C++' if QT_MAJOR >= 6 else 'Qt5/C++'}"
+        ">>> 翻译插件启动完成："
+        f"词条数={len(TRANSLATE_DICT)}，"
+        f"词典加载={json_load_ms:.1f} 毫秒，"
+        f"原生词典同步={native_sync_ms:.1f} 毫秒，"
+        f"原生界面安装={native_ui_ms:.1f} 毫秒，"
+        f"总耗时={total_ms:.1f} 毫秒，"
+        f"运行引擎={'Qt6/C++' if QT_MAJOR >= 6 else 'Qt5/C++'}"
     )
 
     # Do not attach a module-level Python callback to aboutToQuit. Painter may

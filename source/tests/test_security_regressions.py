@@ -195,6 +195,16 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("_release_native_delegate()", python)
         self.assertIn("FreeLibrary", python)
 
+    def test_initial_cleanup_does_not_load_native_delegate_twice(self):
+        python = MODULE_SOURCE.read_text(encoding="utf-8")
+        cleanup = python.split("def _clear_native_shortcuts():", 1)[1].split(
+            "\ndef ", 1
+        )[0]
+        self.assertIn("dll = _native_delegate", cleanup)
+        self.assertNotIn("_load_native_delegate()", cleanup)
+        self.assertIn(">>> 翻译插件启动完成：", python)
+        self.assertNotIn("Translation plugin startup:", python)
+
     def test_asset_preview_translation_uses_tooltip_context_not_iat_hook(self):
         cpp = CPP_SOURCE.read_text(encoding="utf-8")
         for marker in (

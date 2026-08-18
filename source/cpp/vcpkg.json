@@ -1,6 +1,6 @@
 {
   "name": "sp-translation-extractor",
-  "version-string": "1.3.5",
+  "version-string": "1.3.6",
   "dependencies": [
     "hdf5",
     "libarchive",

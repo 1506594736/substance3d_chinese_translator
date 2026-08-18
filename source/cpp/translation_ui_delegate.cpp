@@ -257,10 +257,13 @@ QString translationControlId(QWidget *widget, const QString &sourceText) {
 }
 
 bool containsCjk(const QString &text) {
-    for (const QChar character : text) {
-        const uint code = character.unicode();
-        if ((code >= 0x3400 && code <= 0x4DBF) ||
-            (code >= 0x4E00 && code <= 0x9FFF))
+    const QVector<uint> codePoints = text.toUcs4();
+    for (const uint code : codePoints) {
+        if (code == 0x3007 ||
+            (code >= 0x3400 && code <= 0x4DBF) ||
+            (code >= 0x4E00 && code <= 0x9FFF) ||
+            (code >= 0xF900 && code <= 0xFAFF) ||
+            (code >= 0x20000 && code <= 0x2FA1F))
             return true;
     }
     return false;
@@ -966,7 +969,13 @@ private:
             hostKind_ == kind)
             return;
 
-        unbind(true);
+        // Painter may replace only the model while preserving the same search
+        // field and view. In that case the visible CJK query is still locally
+        // owned, so do not transiently send it to the host's native search.
+        const bool sameSearchSurface =
+            container_ == container && field_ == field && view_ == view &&
+            hostKind_ == kind;
+        unbind(!sameSearchSurface);
         container_ = container;
         field_ = field;
         view_ = view;
@@ -980,6 +989,8 @@ private:
 
         if (active_ && containsCjk(field_->text()))
             activateLocalQuery(field_->text());
+        else
+            clearHiddenRows();
     }
 
     void connectModel() {
@@ -987,16 +998,23 @@ private:
             return;
         modelConnections_.push_back(QObject::connect(
             model_, &QAbstractItemModel::modelReset, this,
-            [this] { scheduleFilter(); }));
+            [this] { refreshRowMask(); }));
         modelConnections_.push_back(QObject::connect(
             model_, &QAbstractItemModel::rowsInserted, this,
-            [this](const QModelIndex &, int, int) { scheduleFilter(); }));
+            [this](const QModelIndex &, int, int) { refreshRowMask(); }));
         modelConnections_.push_back(QObject::connect(
             model_, &QAbstractItemModel::rowsRemoved, this,
-            [this](const QModelIndex &, int, int) { scheduleFilter(); }));
+            [this](const QModelIndex &, int, int) { refreshRowMask(); }));
         modelConnections_.push_back(QObject::connect(
             model_, &QAbstractItemModel::layoutChanged, this,
-            [this] { scheduleFilter(); }));
+            [this] { refreshRowMask(); }));
+        modelConnections_.push_back(QObject::connect(
+            model_, &QAbstractItemModel::dataChanged, this,
+            [this](const QModelIndex &, const QModelIndex &,
+                   const QVector<int> &) {
+                if (localQuery_)
+                    scheduleFilter();
+            }));
     }
 
     void disconnectModel() {
@@ -1036,6 +1054,15 @@ private:
         // selected native category. setText() emits textChanged(), but the
         // applying_ guard above prevents recursion into this handler.
         field_->setText(QString());
+
+        // A host-side textChanged handler is allowed to rebuild the resource
+        // widget synchronously. Never dereference stale QPointers afterward.
+        if (!field_ || !view_) {
+            applying_ = false;
+            localQuery_ = false;
+            query_.clear();
+            return;
+        }
 
         // Restore the user's CJK text only for presentation. QSignalBlocker
         // restores the previous signal state even if Qt code throws/returns.
@@ -1082,27 +1109,48 @@ private:
         timer_->start();
     }
 
+    void refreshRowMask() {
+        if (active_ && localQuery_)
+            scheduleFilter();
+        else
+            clearHiddenRows();
+    }
+
     QStringList normalizedTerms() const {
-        QStringList terms;
-        const QStringList raw =
-            query_.simplified().split(QLatin1Char(' '));
-        for (const QString &term : raw) {
-            const QString normalized = normalizeForMatch(term);
-            if (!normalized.isEmpty())
-                terms.push_back(normalized);
-        }
-        return terms;
+        const QString normalized = normalizeForMatch(query_);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+        return normalized.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+#else
+        return normalized.split(QLatin1Char(' '), QString::SkipEmptyParts);
+#endif
     }
 
     void applyFilter() {
         if (!active_ || !localQuery_ || !view_ || !model_)
             return;
-        if (view_->model() != model_ ||
-            !isSupportedModel(model_, hostKind_)) {
+        // Painter may rebuild the model asynchronously after the user clears
+        // the field. A stale timer must always fail open instead of applying
+        // the previous CJK row mask to an empty/native query.
+        const QString visibleQuery = field_ ? field_->text().trimmed()
+                                            : QString();
+        if (visibleQuery.isEmpty() || !containsCjk(visibleQuery)) {
+            deactivateLocalQuery(false);
+            return;
+        }
+        if (view_->model() != model_) {
             QWidget *container = container_.data();
-            unbind(true);
-            if (container)
+            if (container &&
+                isSupportedModel(view_->model(), hostKind_)) {
+                // bindContainer() recognizes a model-only replacement and
+                // preserves ownership of the visible CJK query.
                 bindContainer(container);
+            } else {
+                unbind(true);
+            }
+            return;
+        }
+        if (!isSupportedModel(model_, hostKind_)) {
+            unbind(true);
             return;
         }
 
@@ -3291,7 +3339,7 @@ void editTranslation(const QString &source, const QString &uniqueId,
     uniqueIdEdit->setObjectName(QStringLiteral("sp_translation_unique_id"));
     auto *idTip = new QLabel(
         QStringLiteral(
-            "自定义 ID 格式：上级控件类名||自身控件类名||自身控件objectName||原文"),
+            "自定义 ID 格式：上级控件类名||自身控件类名||自身控件 objectName||原文"),
         &dialog);
     idTip->setObjectName(QStringLiteral("sp_translation_id_tip"));
     idTip->setWindowFlags(Qt::ToolTip);
@@ -3308,7 +3356,7 @@ void editTranslation(const QString &source, const QString &uniqueId,
         panelName.isEmpty() ? QStringLiteral("None") : panelName, &dialog);
     panelEdit->setReadOnly(true);
     panelEdit->setObjectName(QStringLiteral("sp_translation_panel_name"));
-    form->addRow(QStringLiteral("自定义ID："), uniqueIdEdit);
+    form->addRow(QStringLiteral("自定义 ID："), uniqueIdEdit);
     form->addRow(QStringLiteral("所属面板："), panelEdit);
     form->addRow(QStringLiteral("原文："), sourceEdit);
     form->addRow(QStringLiteral("当前翻译："), currentEdit);
@@ -3747,8 +3795,8 @@ void scanVisibleWidgets() {
 extern "C" __declspec(dllexport) int __cdecl sp_delegate_api_version() { return 14; }
 
 extern "C" __declspec(dllexport) const wchar_t *__cdecl sp_delegate_build_id() {
-    // 构建标识：用于确认正在运行的 DLL 是否包含最新快捷键逻辑。
-    return L"20260814-sp-sd-cjk-search";
+    // 构建标识：用于确认正在运行的 DLL 是否包含最新搜索逻辑。
+    return L"20260818-v1.3.6-sp-sd-cjk-search";
 }
 
 extern "C" __declspec(dllexport) void __cdecl sp_delegate_set_fallback_path(

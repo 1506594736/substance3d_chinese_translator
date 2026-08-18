@@ -76,6 +76,9 @@ class SecurityRegressionTests(unittest.TestCase):
         metadata = json.loads(
             (SOURCE / "pluginInfo.json").read_text(encoding="utf-8")
         )
+        native_metadata = json.loads(
+            (SOURCE / "cpp" / "vcpkg.json").read_text(encoding="utf-8")
+        )
         tree = ast.parse(MODULE_SOURCE.read_text(encoding="utf-8"))
         version = None
         for node in tree.body:
@@ -86,6 +89,7 @@ class SecurityRegressionTests(unittest.TestCase):
                 version = ast.literal_eval(node.value)
                 break
         self.assertEqual(metadata["version"], version)
+        self.assertEqual(native_metadata["version-string"], version)
 
     def test_build_uses_case_deduplicated_environment(self):
         build = _load_build_module()
@@ -121,6 +125,24 @@ class SecurityRegressionTests(unittest.TestCase):
         )
         self.assertIn("shutil.copy2(preserved, target)", apply_source)
         self.assertNotIn("_merge_preserved_translation", source)
+
+    def test_update_restores_wait_cursor_before_result_dialogs(self):
+        source = MODULE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        apply_update = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_apply_update_now"
+        )
+        apply_source = ast.get_source_segment(source, apply_update)
+        self.assertIn("def restore_wait_cursor():", apply_source)
+        self.assertIn("nonlocal wait_cursor_active", apply_source)
+        for title in ('"更新已应用"', '"更新失败"'):
+            dialog_position = apply_source.index(title)
+            restore_position = apply_source.rfind(
+                "restore_wait_cursor()", 0, dialog_position
+            )
+            self.assertGreater(restore_position, 0)
 
     def test_no_zbrush_connector_code_in_plugin_sources(self):
         forbidden = [
@@ -167,6 +189,10 @@ class SecurityRegressionTests(unittest.TestCase):
             "QSignalBlocker",
             "setRowHidden",
             "restoreNativeQuery",
+            "refreshRowMask",
+            "sameSearchSurface",
+            "&QAbstractItemModel::dataChanged",
+            "visibleQuery.isEmpty() || !containsCjk(visibleQuery)",
             "g_assetRowFilter->shutdown()",
         ):
             self.assertIn(marker, cpp)

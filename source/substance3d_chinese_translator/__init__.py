@@ -462,7 +462,7 @@ DELEGATE_DLL_PATH = os.path.join(
     else "translator_delegate_qt6.dll",
 )
 PLUGIN_DISPLAY_NAME = "中文翻译补全插件"
-PLUGIN_VERSION = "1.3.5"
+PLUGIN_VERSION = "1.3.6"
 PLUGIN_REPO = "iillya/substance3d_chinese_translator"
 PLUGIN_RELEASE_URL = (
     f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
@@ -614,7 +614,7 @@ def load_translation_packages():
     ID_TRANSLATE_DICTS.clear()
     plugin_dir = TRANSLATIONS_DIR
     if not os.path.isdir(plugin_dir):
-        print(f">>> 翻译包目录不存在: {plugin_dir}")
+        print(f">>> 翻译包目录不存在：{plugin_dir}")
         return
     package_names = sorted(
         (name for name in os.listdir(plugin_dir)
@@ -653,9 +653,9 @@ def load_translation_packages():
                             and source and target):
                         TRANSLATE_DICT[source] = target
                         loaded += 1
-            print(f">>> 已加载翻译包 {name}: {loaded} 条")
+            print(f">>> 已加载翻译包 {name}：{loaded} 条")
         except Exception as exc:
-            print(f">>> 跳过无效翻译包 {name}: {exc}")
+            print(f">>> 跳过无效翻译包 {name}：{exc}")
 
 
 # Native C++ delegate: Painter never calls back into Python while painting.
@@ -717,14 +717,14 @@ def _load_native_delegate():
         dll.sp_delegate_uninstall_ui.restype = None
         api_version = dll.sp_delegate_api_version()
         if api_version != 14:
-            print(f">>> 原生翻译模块 API 不兼容: 需要 14，实际 {api_version}")
+            print(f">>> 原生翻译模块 API 不兼容：需要 14，实际 {api_version}")
             return None
         dll.sp_delegate_build_id.restype = ctypes.c_wchar_p
         dll.sp_delegate_build_id.argtypes = []
-        print(f">>> 原生翻译引擎构建标识: {dll.sp_delegate_build_id()}")
+        print(f">>> 原生翻译引擎构建标识：{dll.sp_delegate_build_id()}")
         _native_delegate = dll
     except Exception as exc:
-        print(">>> 原生资源翻译 delegate 加载失败:", exc)
+        print(">>> 原生资源翻译 delegate 加载失败：", exc, sep="")
         _native_delegate = None
     return _native_delegate
 
@@ -738,7 +738,7 @@ def _call_native(func_name, *args, label="原生调用"):
         getattr(dll, func_name)(*args)
         return True
     except Exception as exc:
-        print(f">>> {label}失败:", exc)
+        print(f">>> {label}失败：", exc, sep="")
         return False
 
 
@@ -773,7 +773,7 @@ def _sync_native_dictionary():
         dll.sp_delegate_set_enabled(int(IS_TRANSLATION_ENABLED))
         return True
     except Exception as exc:
-        print(">>> 原生资源翻译字典同步失败:", exc)
+        print(">>> 原生资源翻译字典同步失败：", exc, sep="")
         return False
 
 
@@ -787,7 +787,7 @@ def _install_native_ui(app):
             return False
         return dll.sp_delegate_install_ui(ctypes.c_void_p(pointer)) == 1
     except Exception as exc:
-        print(">>> C++ 界面翻译引擎安装失败:", exc)
+        print(">>> C++ 界面翻译引擎安装失败：", exc, sep="")
         return False
 
 
@@ -804,7 +804,7 @@ def _uninstall_native_ui():
             ctypes.c_void_p(pointer or 0)
         )
     except Exception as exc:
-        print(">>> C++ 界面翻译引擎卸载失败:", exc)
+        print(">>> C++ 界面翻译引擎卸载失败：", exc, sep="")
 
 
 def _release_native_delegate():
@@ -823,7 +823,7 @@ def _release_native_delegate():
             else:
                 print(">>> 原生翻译 DLL 释放失败，将由宿主退出时回收")
         except Exception as exc:
-            print(">>> 原生翻译 DLL 释放失败:", exc)
+            print(">>> 原生翻译 DLL 释放失败：", exc, sep="")
     gc.collect()
 
 
@@ -928,13 +928,13 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         credit = QtWidgets.QLabel(
             '<a href="https://space.bilibili.com/281243426" '
             'style="color: #66aaff;">'
-            "本插件由 bilibili 神说要凑数 制作，"
+            "本插件由 bilibili“神说要凑数”制作，"
             "点击可查看作者主页</a>"
             "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
             '<a href="https://github.com/iillya/'
             'substance3d_chinese_translator" '
             'style="color: #66aaff;">'
-            "插件GitHub 仓库</a>",
+            "插件 GitHub 仓库</a>",
             self,
         )
         credit.setOpenExternalLinks(True)
@@ -1062,7 +1062,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.enable_shortcut_button.setMinimumWidth(160)
         self.enable_shortcut_button.set_value(ENABLE_SHORTCUT)
         self.enable_shortcut_button.setToolTip(
-            _tooltip("按 Esc 取消，按 Backspace 恢复默认")
+            _tooltip("按 Esc 取消，按 Backspace 恢复默认。")
         )
         self.enable_shortcut_button.key_captured.connect(
             self._apply_enable_shortcut
@@ -1077,7 +1077,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         self.edit_popup_button.setMinimumWidth(160)
         self.edit_popup_button.set_value(EDIT_TRIGGER.display_text())
         self.edit_popup_button.setToolTip(
-            _tooltip("按 Esc 取消，按 Backspace 恢复默认")
+            _tooltip("按 Esc 取消，按 Backspace 恢复默认。")
         )
         self.edit_popup_button.mouse_captured.connect(
             self._apply_edit_trigger
@@ -1142,7 +1142,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
 
         self.package_id_edit = QtWidgets.QLineEdit("extracted-assets")
         form.addRow("翻译包 ID", self.package_id_edit)
-        self.description_edit = QtWidgets.QLineEdit("Extracted Substance asset labels")
+        self.description_edit = QtWidgets.QLineEdit("提取的 Substance 资产标签")
         form.addRow("说明", self.description_edit)
         layout.addWidget(extract_group)
 
@@ -1229,7 +1229,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
             "导出资产库未翻译名称", self.button_container
         )
         self.export_library_button.setToolTip(
-            _tooltip("导出资源库中尚无有效中文译文的资产名称")
+            _tooltip("导出资源库中尚无有效中文译文的资产名称。")
         )
         self.export_library_button.clicked.connect(
             self._export_asset_library_names
@@ -1309,7 +1309,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         initial = os.path.join(TRANSLATIONS_DIR, "untranslated_assets_zh.json")
         output, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "导出 Painter 资产库未翻译名称", initial,
-            "Chinese translation package (*_zh.json)"
+            "中文翻译包 (*_zh.json)"
         )
         if not output:
             return
@@ -1408,7 +1408,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         initial = os.path.join(TRANSLATIONS_DIR, "untranslated_assets_zh.json")
         output, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "导出 Designer 资源库未翻译名称", initial,
-            "Chinese translation package (*_zh.json)"
+            "中文翻译包 (*_zh.json)"
         )
         if not output:
             return
@@ -1435,7 +1435,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 try:
                     definitions = module.getDefinitions()
                 except Exception as exc:
-                    failures.append("读取节点模块失败: %s" % exc)
+                    failures.append("读取节点模块失败：%s" % exc)
                     continue
                 for definition in definitions:
                     try:
@@ -1450,7 +1450,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                         if _is_untranslated_asset_name(name):
                             names.add(name)
                     except Exception as exc:
-                        failures.append("读取节点名称失败: %s" % exc)
+                        failures.append("读取节点名称失败：%s" % exc)
                 self.status_label.setText(
                     f"正在读取节点模块 {module_number}/{len(modules)}，"
                     f"已发现 {len(names)} 个名称"
@@ -1508,13 +1508,13 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                 try:
                     collect_visible_model(model)
                 except Exception as exc:
-                    failures.append("读取资源库模型失败: %s" % exc)
+                    failures.append("读取资源库模型失败：%s" % exc)
 
             for package_number, package in enumerate(packages, 1):
                 try:
                     resources = package.getChildrenResources(True)
                 except Exception as exc:
-                    failures.append("读取包资源失败: %s" % exc)
+                    failures.append("读取包资源失败：%s" % exc)
                     continue
                 for resource in resources:
                     try:
@@ -1526,7 +1526,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                         if _is_untranslated_asset_name(name):
                             names.add(name)
                     except Exception as exc:
-                        failures.append("读取资源名称失败: %s" % exc)
+                        failures.append("读取资源名称失败：%s" % exc)
                 self.status_label.setText(
                     f"正在读取已加载资源包 {package_number}/{len(packages)}，"
                     f"已发现 {len(names)} 个名称"
@@ -1591,7 +1591,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
     def _browse_output(self):
         initial = self.output_edit.text().strip() or "extracted_assets_zh.json"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "保存翻译包", initial, "Chinese translation package (*_zh.json)"
+            self, "保存翻译包", initial, "中文翻译包 (*_zh.json)"
         )
         if path:
             path = _ensure_zh_json_suffix(path)
@@ -1794,11 +1794,11 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
                     f"失败 {message.get('failures', 0)} 个"
                 )
                 self.log.appendPlainText(
-                    f"\n已写入: {message.get('output', '')}"
+                    f"\n已写入：{message.get('output', '')}"
                 )
             elif message_type == "fatal":
                 self.log.appendPlainText(
-                    f"致命错误: {message.get('message', '')}"
+                    f"致命错误：{message.get('message', '')}"
                 )
 
     def _read_extractor_error(self):
@@ -1834,7 +1834,7 @@ class ChineseTranslationToolDialog(QtWidgets.QDialog):
         if not is_safe(process):
             return
         error_text = process.errorString()
-        self.log.appendPlainText(f"提取器错误: {error_text}")
+        self.log.appendPlainText(f"提取器错误：{error_text}")
         # QProcess 启动失败时（如提取器被占用）不会触发 finished()，
         # 这里补做收尾，避免界面一直停在“运行中”。
         self._read_extractor_output()
@@ -1907,7 +1907,7 @@ def _sync_designer_graph_translation():
             print(">>> 警告：节点挂钩未能全部恢复，已切换为纯转发。")
         return True
     except Exception as exc:
-        print(">>> 切换节点翻译失败:", exc)
+        print(">>> 切换节点翻译失败：", exc, sep="")
         return False
 
 
@@ -1927,8 +1927,8 @@ def _set_designer_graph_translation(enabled):
         result = QtWidgets.QMessageBox.warning(
             dialog or _get_main_window(),
             "启用节点翻译",
-            "节点翻译需要临时修改Designer主程序的Qt绘制导入表。\n"
-            "启用时会有未知风险， "
+            "节点翻译需要临时修改 Designer 主程序的 Qt 绘制导入表。\n"
+            "启用时存在未知风险，"
             "仍要启用吗？",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
@@ -2018,7 +2018,7 @@ def _on_native_dictionary_reload():
         load_translation_packages()
         return int(_sync_native_dictionary())
     except Exception as exc:
-        print(">>> 原生编辑后的词库重载失败:", exc)
+        print(">>> 原生编辑后的词库重载失败：", exc, sep="")
         return 0
 
 
@@ -2053,7 +2053,7 @@ def _apply_shortcuts():
         )
         dll.sp_delegate_set_enable_shortcut(ENABLE_SHORTCUT or "")
     except Exception as exc:
-        print(">>> 同步快捷键配置失败:", exc)
+        print(">>> 同步快捷键配置失败：", exc, sep="")
 
 
 def _clear_native_shortcuts():
@@ -2068,7 +2068,7 @@ def _clear_native_shortcuts():
         dll.sp_delegate_set_dictionary_reload_callback(None)
         dll.sp_delegate_set_enable_shortcut("")
     except Exception as exc:
-        print(">>> 清理快捷键配置失败:", exc)
+        print(">>> 清理快捷键配置失败：", exc, sep="")
 
 
 def _set_translation_enabled(enabled):
@@ -2258,7 +2258,7 @@ def _normalized_zip_name(info):
         or ((info.external_attr >> 16) & 0o170000) == 0o120000
     )
     if unsafe:
-        raise RuntimeError(f"更新包包含不安全路径或链接: {info.filename}")
+        raise RuntimeError(f"更新包包含不安全路径或链接：{info.filename}")
     return "/".join(parts)
 
 
@@ -2276,37 +2276,37 @@ def _validate_update_archive(path, expected_version=None):
             name = _normalized_zip_name(info)
             folded = name.casefold()
             if folded in folded_names:
-                raise RuntimeError(f"更新包含重复路径: {name}")
+                raise RuntimeError(f"更新包含重复路径：{name}")
             folded_names.add(folded)
             names.add(name)
             if info.is_dir():
                 continue
             file_names.add(name)
             if info.flag_bits & 0x1:
-                raise RuntimeError(f"更新包含加密文件: {name}")
+                raise RuntimeError(f"更新包含加密文件：{name}")
             if info.file_size > MAX_UPDATE_FILE_BYTES:
-                raise RuntimeError(f"更新包单个文件过大: {name}")
+                raise RuntimeError(f"更新包单个文件过大：{name}")
             expanded += info.file_size
             if expanded > MAX_UPDATE_EXPANDED_BYTES:
                 raise RuntimeError("更新包解压总大小超过安全上限。")
             if (info.file_size > 1024 * 1024
                     and info.file_size >
                     max(1, info.compress_size) * MAX_UPDATE_COMPRESSION_RATIO):
-                raise RuntimeError(f"更新包文件压缩比异常: {name}")
+                raise RuntimeError(f"更新包文件压缩比异常：{name}")
         missing = REQUIRED_UPDATE_FILES.difference(file_names)
         if missing:
             raise RuntimeError(
-                f"下载的发布包缺少必要文件: {sorted(missing)}"
+                f"下载的发布包缺少必要文件：{sorted(missing)}"
             )
         unexpected = file_names.difference(RELEASE_FILE_ALLOWLIST)
         if unexpected:
             raise RuntimeError(
-                f"下载的发布包包含非白名单文件: {sorted(unexpected)}"
+                f"下载的发布包包含非白名单文件：{sorted(unexpected)}"
             )
         try:
             metadata = json.loads(archive.read("pluginInfo.json").decode("utf-8-sig"))
         except Exception as exc:
-            raise RuntimeError(f"更新包 pluginInfo.json 无效: {exc}")
+            raise RuntimeError(f"更新包 pluginInfo.json 无效：{exc}")
         if metadata.get("name") != "substance3d_chinese_translator":
             raise RuntimeError("更新包插件标识不匹配。")
         packaged_version = str(metadata.get("version") or "").lstrip("vV")
@@ -2317,7 +2317,7 @@ def _validate_update_archive(path, expected_version=None):
             )
         bad_member = archive.testzip()
         if bad_member:
-            raise RuntimeError(f"更新包校验失败: {bad_member}")
+            raise RuntimeError(f"更新包校验失败：{bad_member}")
 
 
 def _download_update(url, destination, expected_sha256, expected_version,
@@ -2599,7 +2599,16 @@ def _apply_update_now(zip_path, parent=None):
     backup_dir = UPDATE_BACKUP_DIR
     stage_dir = None
     preserve_dir = None
+    wait_cursor_active = False
     QtWidgets.QApplication.setOverrideCursor(WAIT_CURSOR)
+    wait_cursor_active = True
+
+    def restore_wait_cursor():
+        nonlocal wait_cursor_active
+        if wait_cursor_active:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            wait_cursor_active = False
+
     try:
         stage_dir = tempfile.mkdtemp(prefix="sp_update_stage_")
         _validate_update_archive(zip_path)
@@ -2617,11 +2626,11 @@ def _apply_update_now(zip_path, parent=None):
                 )
                 if unsafe:
                     raise RuntimeError(
-                        f"更新包包含不安全路径: {info.filename}"
+                        f"更新包包含不安全路径：{info.filename}"
                     )
                 if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     raise RuntimeError(
-                        f"更新包包含符号链接: {info.filename}"
+                        f"更新包包含符号链接：{info.filename}"
                     )
             for info in archive.infolist():
                 normalized = _normalized_zip_name(info)
@@ -2630,7 +2639,7 @@ def _apply_update_now(zip_path, parent=None):
                 ))
                 if os.path.commonpath((stage_dir, target)) != stage_dir:
                     raise RuntimeError(
-                        f"更新包成员越过了暂存目录: {info.filename}"
+                        f"更新包成员越过了暂存目录：{info.filename}"
                     )
                 if info.is_dir():
                     os.makedirs(target, exist_ok=True)
@@ -2724,6 +2733,10 @@ def _apply_update_now(zip_path, parent=None):
         except OSError:
             pass
 
+        # Result dialogs must use the normal pointer. Keeping WaitCursor until
+        # the function-level finally block makes the cursor spin for the whole
+        # time this modal prompt is open.
+        restore_wait_cursor()
         QtWidgets.QMessageBox.information(
             parent,
             "更新已应用",
@@ -2752,9 +2765,10 @@ def _apply_update_now(zip_path, parent=None):
         except Exception:
             pass
         kept = (
-            f"\n更新包保留在: {zip_path}，可稍后重试或手动安装。"
+            f"\n更新包保留在：{zip_path}，可稍后重试或手动安装。"
             if os.path.isfile(zip_path) else ""
         )
+        restore_wait_cursor()
         QtWidgets.QMessageBox.warning(
             parent,
             "更新失败",
@@ -2762,7 +2776,7 @@ def _apply_update_now(zip_path, parent=None):
         )
         return False
     finally:
-        QtWidgets.QApplication.restoreOverrideCursor()
+        restore_wait_cursor()
         for path in (stage_dir, preserve_dir):
             if path and os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
@@ -2960,8 +2974,8 @@ def _start_native_engine():
     ui_ms = (time.perf_counter() - phase) * 1000.0
     if not dictionary_ok or not ui_ok:
         print(
-            ">>> 原生翻译引擎未完全启用: "
-            f"dictionary={dictionary_ok}, ui={ui_ok}"
+            ">>> 原生翻译引擎未完全启用："
+            f"词典同步={dictionary_ok}，界面安装={ui_ok}"
         )
     return dictionary_ok, ui_ok, json_ms, sync_ms, ui_ms
 
@@ -3009,7 +3023,7 @@ def initializeSDPlugin():
 
     main_window = _get_main_window()
     if not is_safe(main_window):
-        raise RuntimeError("Designer Qt UI manager is not available")
+        raise RuntimeError("Designer 的 Qt 界面管理器不可用")
 
     IS_APP_QUITTING = False
     IS_CLEANING = False
@@ -3120,12 +3134,12 @@ def start_plugin():
     total_ms = (time.perf_counter() - startup_started) * 1000.0
     print(
         ">>> 翻译插件启动完成："
-        f"词条数={len(TRANSLATE_DICT)}，"
-        f"词典加载={json_load_ms:.1f} 毫秒，"
-        f"原生词典同步={native_sync_ms:.1f} 毫秒，"
-        f"原生界面安装={native_ui_ms:.1f} 毫秒，"
-        f"总耗时={total_ms:.1f} 毫秒，"
-        f"运行引擎={'Qt6/C++' if QT_MAJOR >= 6 else 'Qt5/C++'}"
+        f"词条数：{len(TRANSLATE_DICT)}，"
+        f"词典加载：{json_load_ms:.1f} 毫秒，"
+        f"原生词典同步：{native_sync_ms:.1f} 毫秒，"
+        f"原生界面安装：{native_ui_ms:.1f} 毫秒，"
+        f"总耗时：{total_ms:.1f} 毫秒，"
+        f"运行引擎：{'Qt6/C++' if QT_MAJOR >= 6 else 'Qt5/C++'}"
     )
 
     # Do not attach a module-level Python callback to aboutToQuit. Painter may

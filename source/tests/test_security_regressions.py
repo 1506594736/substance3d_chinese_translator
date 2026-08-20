@@ -179,7 +179,9 @@ class SecurityRegressionTests(unittest.TestCase):
         cpp = CPP_SOURCE.read_text(encoding="utf-8")
         for marker in (
             "AssetRowFilter",
+            "AssetSearchManager",
             "Alg::NewResourcesView",
+            "Alg::ResourcePickerWidget",
             "Alg::SearchFieldLineEdit",
             "Alg::NewResourceListModel",
             "Pfx::DataBase::ResourceTableWidget",
@@ -191,6 +193,8 @@ class SecurityRegressionTests(unittest.TestCase):
             "restoreNativeQuery",
             "refreshRowMask",
             "sameSearchSurface",
+            "filters_.value(container",
+            "filter->setActive(active)",
             "&QAbstractItemModel::dataChanged",
             "visibleQuery.isEmpty() || !containsCjk(visibleQuery)",
             "g_assetRowFilter->shutdown()",

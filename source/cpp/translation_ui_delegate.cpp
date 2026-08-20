@@ -848,6 +848,11 @@ public:
         QWidget *container = resourcesContainer(widget);
         if (!container)
             return;
+        // One filter instance owns exactly one search surface. The manager
+        // creates another instance for every main shelf or resource picker,
+        // so opening a generator/filter picker cannot steal the shelf state.
+        if (container_ && container_ != container)
+            return;
         bindContainer(container);
     }
 
@@ -866,13 +871,13 @@ public:
             scheduleFilter();
     }
 
-    void shutdown() {
+    void shutdown(bool restoreNative = true) {
         active_ = false;
-        unbind(true);
+        unbind(restoreNative);
     }
 
 private:
-    enum class HostKind { None, Painter, Designer };
+    enum class HostKind { None, Painter, PainterPicker, Designer };
 
     static QString className(const QObject *object) {
         return object
@@ -884,6 +889,8 @@ private:
         const QString type = className(object);
         if (type == QStringLiteral("Alg::NewResourcesView"))
             return HostKind::Painter;
+        if (type == QStringLiteral("Alg::ResourcePickerWidget"))
+            return HostKind::PainterPicker;
         if (type == QStringLiteral("Pfx::DataBase::ResourceTableWidget") &&
             object->objectName() == QStringLiteral("mResourceTableWidget"))
             return HostKind::Designer;
@@ -904,6 +911,11 @@ private:
         const QString type = className(model);
         if (kind == HostKind::Painter)
             return type == QStringLiteral("Alg::NewResourceListModel");
+        // Picker model class names vary between Painter releases. The view is
+        // identified strictly by its nearest ResourcePickerWidget ancestor;
+        // filtering only reads DisplayRole and hides rows on the native view.
+        if (kind == HostKind::PainterPicker)
+            return model != nullptr;
         if (kind == HostKind::Designer)
             return type == QStringLiteral(
                        "Pfx::DataBase::ResourcesListModel");
@@ -920,6 +932,8 @@ private:
         if (kind == HostKind::Painter)
             return view->objectName() == QStringLiteral("resources") &&
                    className(view) == QStringLiteral("Alg::ResourceListView");
+        if (kind == HostKind::PainterPicker)
+            return className(view) == QStringLiteral("Alg::ResourceListView");
         if (kind == HostKind::Designer)
             return className(view) == QStringLiteral(
                        "Pfx::DataBase::ResourceTableWidget::CustomListView");
@@ -934,6 +948,9 @@ private:
             return field->objectName() == QStringLiteral("search_field") &&
                    className(field) ==
                        QStringLiteral("Alg::SearchFieldLineEdit");
+        if (kind == HostKind::PainterPicker)
+            return className(field) ==
+                   QStringLiteral("Alg::SearchFieldLineEdit");
         if (kind == HostKind::Designer)
             return field->objectName() == QStringLiteral("globalSearch") &&
                    className(field) == QStringLiteral("QLineEdit");
@@ -949,7 +966,8 @@ private:
         for (QLineEdit *candidate : fields) {
             if (isAssetSearchField(candidate, container)) {
                 field = candidate;
-                break;
+                if (candidate->isVisible())
+                    break;
             }
         }
 
@@ -958,7 +976,8 @@ private:
         for (QListView *candidate : views) {
             if (isMainAssetView(candidate, container)) {
                 view = candidate;
-                break;
+                if (candidate->isVisible())
+                    break;
             }
         }
 
@@ -1228,7 +1247,77 @@ private:
     bool applying_ = false;
 };
 
-AssetRowFilter *g_assetRowFilter = nullptr;
+// Owns one independent AssetRowFilter per resource-search container. Pointer
+// identity is used only while the QWidget is alive; destroyed containers
+// remove their entry immediately and their filter restores no dead widgets.
+class AssetSearchManager final : public QObject {
+public:
+    explicit AssetSearchManager(QObject *parent = nullptr) : QObject(parent) {}
+
+    void observe(QWidget *widget) {
+        QWidget *container = containerFor(widget);
+        if (!container)
+            return;
+        AssetRowFilter *filter = filters_.value(container, nullptr);
+        if (!filter) {
+            filter = new AssetRowFilter(this);
+            filter->setActive(active_);
+            filters_.insert(container, filter);
+            QObject::connect(container, &QObject::destroyed, this,
+                             [this, container] {
+                AssetRowFilter *removed = filters_.take(container);
+                if (removed) {
+                    // QObject::destroyed is emitted during teardown. Do not
+                    // re-enter Painter by emitting textChanged at this point.
+                    removed->shutdown(false);
+                    removed->deleteLater();
+                }
+            });
+        }
+        filter->observe(widget);
+    }
+
+    void setActive(bool active) {
+        active_ = active;
+        for (AssetRowFilter *filter : filters_)
+            filter->setActive(active);
+    }
+
+    void translationsChanged() {
+        for (AssetRowFilter *filter : filters_)
+            filter->translationsChanged();
+    }
+
+    void shutdown() {
+        const QList<AssetRowFilter *> filters = filters_.values();
+        filters_.clear();
+        for (AssetRowFilter *filter : filters) {
+            filter->shutdown();
+            delete filter;
+        }
+    }
+
+private:
+    static QWidget *containerFor(QWidget *widget) {
+        int depth = 0;
+        for (QObject *current = widget; current && depth < 14;
+             current = current->parent(), ++depth) {
+            const QString type =
+                QString::fromLatin1(current->metaObject()->className());
+            if (type == QStringLiteral("Alg::NewResourcesView") ||
+                type == QStringLiteral("Alg::ResourcePickerWidget") ||
+                (type == QStringLiteral("Pfx::DataBase::ResourceTableWidget") &&
+                 current->objectName() == QStringLiteral("mResourceTableWidget")))
+                return qobject_cast<QWidget *>(current);
+        }
+        return nullptr;
+    }
+
+    QHash<QWidget *, AssetRowFilter *> filters_;
+    bool active_ = true;
+};
+
+AssetSearchManager *g_assetRowFilter = nullptr;
 
 void observePainterAssetSearch(QWidget *widget) {
     if (g_assetRowFilter)
@@ -4021,7 +4110,7 @@ extern "C" __declspec(dllexport) int __cdecl sp_delegate_install_ui(void *applic
         application->installEventFilter(g_filter);
     }
     if (!g_assetRowFilter) {
-        g_assetRowFilter = new AssetRowFilter(application);
+        g_assetRowFilter = new AssetSearchManager(application);
         g_assetRowFilter->setActive(g_enabled);
     }
     scanAssetSearchWidgets();

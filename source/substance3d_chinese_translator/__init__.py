@@ -3,7 +3,7 @@
 Substance 3D Painter / Designer 通用中文翻译补全插件
 （资源分类树 + 资产全覆盖版）
 支持：Adobe Substance 3D Painter 7.2 至官方最新版、
-      Adobe Substance 3D Designer 15 及以上。
+      Adobe Substance 3D Designer 14 及以上。
 Painter 新版使用 PySide6 / Qt6 C++ 显示引擎，旧版自动使用
 PySide2 / Qt5 C++ 显示引擎；Designer 固定使用 Qt6 显示引擎。
 """
@@ -454,7 +454,7 @@ PLUGIN_DIR = os.path.dirname(MODULE_DIR)
 TRANSLATIONS_DIR = os.path.join(PLUGIN_DIR, "translations")
 NATIVE_DIR = os.path.join(PLUGIN_DIR, "native")
 EXTRACTOR_PATH = os.path.join(NATIVE_DIR, "translator_extractor.exe")
-# 统一的 Qt6 翻译引擎同时服务 Painter 10.1+ 与 Designer 15+，
+# 统一的 Qt6 翻译引擎同时服务 Painter 10.1+ 与 Designer 14+，
 # C++ 侧在运行时自动识别宿主；Qt5 仅用于旧版 Painter。
 DELEGATE_DLL_PATH = os.path.join(
     NATIVE_DIR,

@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # One translation engine, two delegate binaries.  translation_ui_delegate.cpp
 # is the single source of truth for both hosts:
 #   * translator_delegate_qt5.dll      - Painter 7.2-10.0 (Qt 5.12.5)
-#   * translator_delegate_qt6.dll      - Painter 10.1+ and Designer 15+
+#   * translator_delegate_qt6.dll      - Painter 10.1+ and Designer 14+
 #     (Qt 6.x). The Designer graph-painting hooks are compiled in and enabled
 #     at runtime only when the host process is Designer.
 # ---------------------------------------------------------------------------

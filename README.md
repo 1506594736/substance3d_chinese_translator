@@ -25,9 +25,9 @@
 
 - Windows 10 或 Windows 11，64 位。
 - Substance 3D Painter 7.2 至最新版。
-- Substance 3D Designer 15 及以上版本。
+- Substance 3D Designer 14 及以上版本。
 
-Painter 7.2 至 10.0 使用 Qt5 引擎，Painter 10.1 及以上版本与 Designer 15 及以上版本使用 Qt6 引擎。
+Painter 7.2 至 10.0 使用 Qt5 引擎，Painter 10.1 及以上版本与 Designer 14 及以上版本使用 Qt6 引擎。
 
 ## 安装方法
 
@@ -298,7 +298,7 @@ python source/cpp/build_package.py
 ## 兼容性说明
 
 - Painter 7.2 至 10.0 使用 Qt5 引擎。
-- Painter 10.1 及以上版本与 Designer 15 及以上版本使用 Qt6 引擎。
+- Painter 10.1 及以上版本与 Designer 14 及以上版本使用 Qt6 引擎。
 - Designer 的资源库和节点图识别依赖软件内部控件类名。个别版本升级后，如果内部结构变化，相关面板翻译可能静默失效，但不会导致崩溃。
 - 资源库搜索仍按英文原始名称匹配，翻译只作用于显示层。
 

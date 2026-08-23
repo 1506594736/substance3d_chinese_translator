@@ -16,7 +16,7 @@ One-click build (run from the plug-in root):
     python source/cpp/build_package.py
 
 The command always compiles ``translator_delegate_qt6.dll`` (shared by
-Painter 10.1+ and Designer 15+), ``translator_delegate_qt5.dll`` (Painter
+Painter 10.1+ and Designer 14+), ``translator_delegate_qt5.dll`` (Painter
 7.2-10.0) and ``translator_extractor.exe`` before creating the ZIP. A compile
 failure stops packaging, so an old binary can never be published accidentally.
 
@@ -121,7 +121,7 @@ def _validate_sources() -> None:
     merged_source = MODULE_DIR / "__init__.py"
     merged_text = merged_source.read_text(encoding="utf-8")
     compile(merged_text, str(merged_source), "exec")
-    # Painter 7.2 ships Python 3.7; Designer 15+ ships newer Python. Reject
+    # Painter 7.2 ships Python 3.7; Designer 14+ ships newer Python. Reject
     # newer syntax at package time even when this script itself runs on a
     # newer toolchain.
     try:
@@ -222,7 +222,7 @@ def _build_native() -> None:
     shutil.copy2(DELEGATE_QT6_DLL, NATIVE_DIR / "translator_delegate_qt6.dll")
     shutil.copy2(DELEGATE_QT5_DLL, NATIVE_DIR / "translator_delegate_qt5.dll")
     shutil.copy2(EXTRACTOR_EXE, NATIVE_DIR / "translator_extractor.exe")
-    print("已更新 Qt6 翻译模块（Painter 10.1+ / Designer 15+ 共用）:",
+    print("已更新 Qt6 翻译模块（Painter 10.1+ / Designer 14+ 共用）:",
           NATIVE_DIR / "translator_delegate_qt6.dll")
     print("已更新 Qt5 翻译模块（Painter 7.2-10.0）:",
           NATIVE_DIR / "translator_delegate_qt5.dll")

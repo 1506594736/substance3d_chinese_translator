@@ -90,6 +90,7 @@ class SecurityRegressionTests(unittest.TestCase):
                 break
         self.assertEqual(metadata["version"], version)
         self.assertEqual(native_metadata["version-string"], version)
+        self.assertEqual(metadata["min_designer_version"], "14.0.0")
 
     def test_build_uses_case_deduplicated_environment(self):
         build = _load_build_module()
